@@ -1,0 +1,22 @@
+[project]
+name = "dnn-spectre-sdn-reproducibility"
+version = "1.0.0"
+description = "Reproducibility package for DNN-SPECTRE-SDN (fault injection + GABO + SAC bound optimisation)"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24,<2.0",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "fxpmath",
+    "tqdm",
+    "pyyaml",
+    "psutil",
+    "matplotlib",
+    "openpyxl",
+]
+
+[tool.setuptools]
+# 复现包不打包源码，仅作为依赖清单与元数据声明使用

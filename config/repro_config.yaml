@@ -1,0 +1,60 @@
+# =============================================================================
+# 统一复现配置
+# =============================================================================
+
+# ---- 故障注入次数 -----------------------------------------------------------
+fault_injection:
+  # 主实验每个故障率的注入次数
+  iterations: 100
+  # eval.py 默认注入次数
+  iterations_eval: 10
+  # 多分类 eval_fault 内部迭代次数
+  iterations_multiclass_eval: 20
+
+# ---- BER / 故障率 -----------------------------------------------------------
+fault_rates:
+  # 轨迹预测主实验默认故障率序列
+  trajectory: [1e-7, 3e-7, 5e-7, 7e-7, 1e-6]
+  # 多分类主实验默认故障率序列
+  multiclass: [1e-5, 3e-5, 5e-5, 1e-4, 3e-4]
+  # eval.py 默认
+  eval_default: [3e-5]
+
+# ---- 定点量化位宽 -----------------------------------------------------------
+quantization:
+  total_bits: 32
+  n_frac: 16
+  n_int: 15
+
+# ---- GABO 优化预算 ----------------------------------------------------------
+gabo:
+  max_iter: 100
+  patience: 6
+  max_samples: 2048
+  protect_ratio: 0.9
+  initial_lr_factor: 0.2
+  scale_factor: 2
+  dynamic_range_factor: 1.0
+  # 轨迹主脚本覆盖值
+  trajectory_max_iter: 100
+  trajectory_max_samples: 2048
+  trajectory_protect_ratio: 0.5
+
+# ---- SAC 优化预算 -----------------------------------------------------------
+sac:
+  episodes: 50
+  steps_per_episode: 5
+  sac_lr: 3e-4
+  sac_batch_size: 64
+  sac_updates_per_step: 2
+  n_fault_trials: 5
+  eval_samples: 2048
+
+# ---- 校准样本数量（激活统计 / 评估样本）-------------------------------------
+calibration_samples:
+  # GABO 激活统计 + 优化样本
+  gabo_max_samples: 2048
+  # SAC 评估样本
+  sac_eval_samples: 2048
+
+
