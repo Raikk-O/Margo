@@ -1,15 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-多分类数据准备(轨迹 pkl -> 特征矩阵 + 划分),带缓存,供训练/测试脚本共享。
-==============================================================================
-把"读轨迹 pkl -> 去泄漏 -> 正常下采样 -> 提取特征 -> 按 mmsi 分组划分"整条
-流程抽成公共函数 prepare_multiclass_data,结果缓存在 data_base/traj_prepared_seed{seed}.npz,
-避免每次重复读 100 个 pkl + 重算特征。
 
-用法:
-  from data_prepare import prepare_multiclass_data
-  names, (Xtr, ytr), (Xva, yva), (Xte, yte) = prepare_multiclass_data(data_base, regions, seed)
-"""
 import os
 import glob
 from collections import defaultdict
@@ -20,13 +9,11 @@ from traj_classify import extract_features, load_tracks_full, load_labels_local
 
 CLASS_NAMES = ["normal", "deviate", "heading", "sog_noise"]
 
-# 重尾特征(max/median > 10): 距离/步长突变/弯曲度。min-max 前先 log1p 压缩,
-# 否则极端值(如 tortuosity max≈7116)会把其余特征挤到 [0,1] 的极小段。
 LOG_FEATURES = ["max_dstep", "max_step", "top5_dstep", "top5_step", "tortuosity"]
 
 
 def _normalize_features(X_train, X_valid, X_test, names, log_features):
-    """log1p(重尾特征) + min-max 到 [0,1]。min/max 仅用 train 计算(防测试泄漏)。"""
+    
     X_train = np.asarray(X_train, dtype=np.float32).copy()
     X_valid = np.asarray(X_valid, dtype=np.float32).copy()
     X_test = np.asarray(X_test, dtype=np.float32).copy()
@@ -43,7 +30,6 @@ def _normalize_features(X_train, X_valid, X_test, names, log_features):
     X_test = (X_test - feat_min) / rng
     return X_train, X_valid, X_test
 
-# 海域配置: (名称, lat_min, lon_min),数据目录由 data_base 拼接
 _REGION_META = {
     "west":   (34.5, -126.0),
     "mexico": (25.2, -92.5),
@@ -56,7 +42,7 @@ def get_regions(data_base):
 
 
 def load_multiclass(region_names, REGIONS):
-    normal = []       # (track, lat_min, lon_min)
+    normal = []       
     classes = {1: [], 2: [], 3: []}
     for name in region_names:
         root, lat_min, lon_min = REGIONS[name]
@@ -76,7 +62,6 @@ def load_multiclass(region_names, REGIONS):
                     if int(lb[0]) == 0 and int(lb[1]) == 0:
                         continue
                     classes[int(t)].append((tr, lat_min, lon_min))
-    # 去泄漏: 移除与异常共享 mmsi 的正常轨迹
     abn_mmsi = set()
     for t in (1, 2, 3):
         for tr, _, _ in classes[t]:
@@ -86,7 +71,7 @@ def load_multiclass(region_names, REGIONS):
 
 
 def split_grouped(tracks, bounds, labels, test_r=0.2, valid_r=0.15, seed=42):
-    """按 (海域, mmsi) 分组 + 按类别分层划分。"""
+    
     rng = np.random.default_rng(seed)
     grp = defaultdict(list)
     for i, (tr, b) in enumerate(zip(tracks, bounds)):
@@ -117,11 +102,7 @@ def split_grouped(tracks, bounds, labels, test_r=0.2, valid_r=0.15, seed=42):
 
 def prepare_multiclass_data(data_base, regions="west,mexico", seed=42,
                             refresh=False, verbose=True):
-    """准备多分类数据,带缓存。
-
-    返回 (names, (Xtr, ytr), (Xva, yva), (Xte, yte)),X 未标准化。
-    缓存文件: data_base/traj_prepared_seed{seed}.npz
-    """
+    
     cache_path = os.path.join(data_base, f"traj_prepared_seed{seed}.npz")
     if os.path.exists(cache_path) and not refresh:
         d = np.load(cache_path, allow_pickle=True)
@@ -146,7 +127,6 @@ def prepare_multiclass_data(data_base, regions="west,mexico", seed=42,
         for tr, lo, la in classes[t]:
             tracks.append(tr); bounds.append((lo, la)); labels.append(t)
 
-    # 正常类下采样到与异常类相当的量级
     n_norm = len(normal)
     n_abn_max = max(len(classes[1]), len(classes[2]), len(classes[3]))
     if n_norm > n_abn_max * 3:
@@ -178,7 +158,6 @@ def prepare_multiclass_data(data_base, regions="west,mexico", seed=42,
     X_valid, y_valid = X[va_idx], y[va_idx]
     X_test, y_test = X[te_idx], y[te_idx]
 
-    # ---- 归一化: log1p(重尾) + min-max 到 [0,1] ----
     X_train, X_valid, X_test = _normalize_features(
         X_train, X_valid, X_test, names, LOG_FEATURES)
 

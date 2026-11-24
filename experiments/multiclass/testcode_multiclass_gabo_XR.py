@@ -1,20 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-多分类轨迹异常检测模型 的 定点量化 + 故障注入容错测试
-=====================================================
-基于 testcode.py 改造: 接入 4 类多分类任务(normal/deviate/heading/sog_noise)
-与 west_coast + mexico_coast 轨迹数据集,评估多分类 MLP 在位翻转故障下的精度。
 
-与原 testcode.py 的差异:
-  1. 任务: 二分类 -> 4 类多分类
-  2. 数据: split CSV 特征表 -> 轨迹 pkl(特征实时提取)
-  3. 模型: 6 层二分类 MLP -> 5 层多分类 MLP(输出 4 类)
-  4. 指标: acc/f1/auc -> accuracy / macro-F1
-  5. 保留: 定点量化(Fxp) + pytorchfi 位翻转故障注入框架
-
-用法:
-  py testcode_multiclass.py --data-base "...\data" --model_path traj_anomaly_classifier.pt
-"""
 import os, sys, argparse, warnings, copy, importlib.util
 import numpy as np
 import torch
@@ -26,7 +10,6 @@ from sklearn.metrics import f1_score
 
 warnings.filterwarnings("ignore")
 
-# ---- rrelu 容错模块加载(与 testcode.py 一致) ----
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, '..', '..'))
 for _p in (_PROJECT_ROOT, os.path.join(_PROJECT_ROOT, 'src')):
@@ -39,7 +22,6 @@ from src.rrelu.relu_bound.bound_relu import Relu_bound
 from src.rrelu.relu_bound.bound_tresh import bounded_relu_tresh
 from src.rrelu.relu_bound.bound_zero import bounded_relu_zero
 
-# CPU 适配(无 cuda 时把 cuda 调用重定向到 cpu)
 USE_CUDA = torch.cuda.is_available()
 if not USE_CUDA:
     torch.Tensor.cuda = lambda self, *a, **k: self
@@ -53,11 +35,9 @@ if not USE_CUDA:
 
     torch.randint = _randint_cpu
 
-# 复用多分类的数据加载与特征提取
 from data_prepare import prepare_multiclass_data, CLASS_NAMES
 
 
-# ---- Ranger 边界保护 ----
 def _load_rrelu_module(mod_name, rel_path):
     file_path = os.path.join(_PROJECT_ROOT, 'src', 'rrelu', rel_path)
     spec = importlib.util.spec_from_file_location(mod_name, file_path)
@@ -69,11 +49,9 @@ def _load_rrelu_module(mod_name, rel_path):
 
 Ranger_bounds = _load_rrelu_module('rrelu_ranger', 'search_bound/ranger.py').Ranger_bounds
 GABO_bounds = _load_rrelu_module('rrelu_gabo_multiclass', 'search_bound/gabo_multiclass.py').GABO_bounds
-# GABO 初始化统计量消融版(审稿人消融实验, only 版): full / entropy_only / skew_only / adaptive_only
 GABO_ablation_bounds = _load_rrelu_module('rrelu_gabo_ablation',
                                           'search_bound/GABO_XR/gabo_ablation.py').GABO_bounds
 GABO_SAC_bounds = _load_rrelu_module('rrelu_gabo_sac', 'search_bound/RL-SAC/gabo_multiClass.py').GABO_SAC_bounds
-# GABO-SAC 初始化统计量消融版(审稿人消融实验, only 版): full / entropy_only / skew_only / adaptive_only
 GABO_SAC_ablation_bounds = _load_rrelu_module('rrelu_gabo_sac_ablation',
                                               'search_bound/GABO_XR_Shrink_iqr/gabo_sac_ablation.py').GABO_SAC_bounds
 
@@ -84,7 +62,7 @@ RELU_BOUND_FN = {
 
 
 def _bitflip_inplace_fixed(t, fault_rate, total_bits, n_frac, n_int):
-    """定点(二补码)权重位翻转(向量化)。"""
+    
     n_fault = int(t.numel() * total_bits * fault_rate)
     if n_fault <= 0:
         return
@@ -101,7 +79,7 @@ def _bitflip_inplace_fixed(t, fault_rate, total_bits, n_frac, n_int):
 
 
 def _bitflip_inplace_float(t, fault_rate, total_bits=32):
-    """IEEE-754 权重位翻转(向量化)。"""
+    
     n_fault = int(t.numel() * total_bits * fault_rate)
     if n_fault <= 0 or t.dtype != torch.float32:
         return
@@ -112,32 +90,26 @@ def _bitflip_inplace_float(t, fault_rate, total_bits=32):
     int_view[idx] ^= torch.bitwise_left_shift(torch.ones_like(b), b)
 
 
-# ---- GABO-SAC 配置 + 对齐评估故障注入的 fault_injector ----
 SAC_CONFIG = dict(
     gabo_max_samples=2048,
-    gabo_protect_ratio=0.7,    # 放宽 GABO 初始下界(0.95 只允许收缩5%, 让 SAC 起点太差)
-    sac_episodes=50,          # 充分收敛(实测 30 ep 后 fault 仍在爬)
+    gabo_protect_ratio=0.7,    
+    sac_episodes=50,          
     sac_steps_per_episode=8,
     sac_lr=3e-4,
     sac_batch_size=64,
     sac_updates_per_step=2,
-    tolerance=0.03,          # 收紧 clean 约束, 防止在 sub_train 上过度收缩导致 val 退化
+    tolerance=0.03,          
     penalty_weight=10.0,
-    protect_bonus_weight=0.0,   # 默认关闭: 避免 protect_ratio 与 fault_acc 同量级污染 reward
-    action_scale=0.5,         # 收缩幅度(0.2 锁死下限; 0.8 范围过大易触发 clean 惩罚退化为少收缩)
-    n_fault_trials=5,           # 提高 fault_acc 估计的稳定性(降低 reward 噪声)
+    protect_bonus_weight=0.0,   
+    action_scale=0.5,         
+    n_fault_trials=5,           
     eval_samples=2048,
     clamp_to_ranger=True,
     verbose=False,
 )
 
 def make_fault_injector(bitflip="fixed", fault_rate=1e-4, total_bits=32, n_frac=16, n_int=15):
-    """为 GABO-SAC 构造故障注入器, 语义与 eval_fault 对齐(定点/浮点位翻转)。
-
-    不能直接用 pytorchfi 的 multi_weight_inj_*: 它会 deepcopy(model), 丢掉 GABO-SAC
-    施加的 forward_pre_hook(λ 截断), 导致所有 action 的 reward 相同、SAC 学不到。
-    这里改为: 快照权重 -> 原地翻转 Linear 权重 -> 前向 -> 下次调用前还原。
-    """
+    
     fixed = (bitflip == "fixed")
 
     def _flip(t):
@@ -166,7 +138,7 @@ def make_fault_injector(bitflip="fixed", fault_rate=1e-4, total_bits=32, n_frac=
 
 
 def replace_act_all(model, relu_bound_fn, bounds, tresh, alpha=None, name=''):
-    """把模型里的 nn.ReLU 替换成有界 ReLU(与 Ranger_bounds 的 key 命名一致)。"""
+    
     for name1, layer in model.named_children():
         if list(layer.children()) == []:
             if isinstance(layer, nn.ReLU) and 'last' not in name1:
@@ -187,7 +159,7 @@ def apply_bound_protection(model, data_loader_dict, device, bitflip="fixed",
                            total_bits=32, n_frac=16, n_int=15, sac_fault_rate=1e-4,
                            gabo_ablation="full", gabo_correct_threshold=0.1,
                            gabo_bound_method="shrink_iqr_adaptive"):
-    """计算每层 ReLU 激活上界(Ranger / GABO / GABO-SAC),替换成有界 ReLU。"""
+    
     if search_bound == "gabo":
         bounds, tresh, _ = GABO_ablation_bounds(model, data_loader_dict, device=device,
                                                 bound_type='layer', bitflip=bitflip,
@@ -195,7 +167,6 @@ def apply_bound_protection(model, data_loader_dict, device, bitflip="fixed",
                                                 correct_threshold=gabo_correct_threshold,
                                                 bound_method=gabo_bound_method)
     elif search_bound == "gabo_sac":
-        # fault_injector 与 eval_fault 的位翻转语义对齐(定点/浮点), 但用原地翻转(不能 deepcopy)
         bounds, tresh, _ = GABO_SAC_ablation_bounds(
             model, data_loader_dict, device=device,
             fault_injector=make_fault_injector(bitflip=bitflip, fault_rate=sac_fault_rate,
@@ -211,10 +182,9 @@ def apply_bound_protection(model, data_loader_dict, device, bitflip="fixed",
     return protected
 
 
-# ==================== 配置 ====================
 SEED = 0
 BATCH_SIZE = 128
-HIDDEN_DIMS = (256, 192, 128, 64, 32)   # 5 层隐藏层(与训练一致)
+HIDDEN_DIMS = (256, 192, 128, 64, 32)   
 DROPOUT = 0.3
 N_CLASS = 4
 METRIC_KEYS = ["accuracy", "macro_f1"]
@@ -224,9 +194,8 @@ class Config:
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# ==================== 多分类 MLP ====================
 class MLP(nn.Module):
-    """5 层隐藏层多分类 MLP,结构必须与 traj_classify_multiclass.py 训练时一致。"""
+    
 
     def __init__(self, input_dim, hidden_dims=HIDDEN_DIMS, n_class=N_CLASS, dropout=DROPOUT):
         super().__init__()
@@ -242,14 +211,13 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.net(x)   # (B, n_class)
+        return self.net(x)   
 
 
-# ==================== 数据集 ====================
 class TrajDataset(Dataset):
     def __init__(self, X, y):
         self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.long)   # 多分类用 long
+        self.y = torch.tensor(y, dtype=torch.long)   
 
     def __len__(self):
         return len(self.X)
@@ -258,7 +226,6 @@ class TrajDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-# ==================== 多分类评估 ====================
 @torch.no_grad()
 def eval_metrics(model, loader, device):
     model.eval()
@@ -281,7 +248,6 @@ def eval_metrics(model, loader, device):
     }
 
 
-# ==================== 定点量化 + 故障注入评估 ====================
 def eval_fault(model, data_loader_dict, fault_rate, iterations=20,
                bitflip="fixed", total_bits=32, n_frac=16, n_int=15):
     device = next(model.parameters()).device
@@ -303,7 +269,6 @@ def eval_fault(model, data_loader_dict, fault_rate, iterations=20,
         use_cuda=USE_CUDA,
     )
 
-    # 量化后、注入前的权重快照，用于统计每个 BER 实际改动了多少权重
     orig_state = pfi_model.original_model.state_dict()
 
     def _count_changed(state_a, state_b):
@@ -337,7 +302,6 @@ def eval_fault(model, data_loader_dict, fault_rate, iterations=20,
     return mean
 
 
-# ==================== 主流程 ====================
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-base", type=str,
@@ -368,7 +332,6 @@ def main():
                         help="GABO-SAC 内部搜索用的位翻转率(与最终评估故障注入对齐)")
 
 
-    # ---- GABO-SAC 可调超参 ----
     parser.add_argument("--gabo-max-samples", type=int, default=2048,
                         help="Phase1 GABO 收集激活统计的样本数")
     parser.add_argument("--gabo-protect-ratio", type=float, default=0.0,
@@ -398,7 +361,6 @@ def main():
     np.random.seed(args.seed)
     fault_rates = [float(x) for x in args.fault_rates.split(",") if x.strip()]
 
-    # 用命令行参数覆盖 GABO-SAC 配置
     SAC_CONFIG.update(
         gabo_max_samples=args.gabo_max_samples,
         gabo_protect_ratio=args.gabo_protect_ratio,
@@ -417,12 +379,10 @@ def main():
         verbose=args.sac_verbose,
     )
 
-    # 1. 准备数据
     print("== 1) 准备数据 ==")
     feature_cols, (X_train, y_train), (X_valid, y_valid), (X_test, y_test) = \
         prepare_multiclass_data(args.data_base, args.regions, seed=args.seed, refresh=args.refresh)
 
-    # 2. 加载模型(数据已在 prepare_multiclass_data 内完成 log1p+min-max 归一化)
     print("\n== 2) 加载多分类模型 ==")
     model_path = os.path.join(_SCRIPT_DIR, args.model_path) if not os.path.isabs(args.model_path) else args.model_path
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
@@ -441,7 +401,6 @@ def main():
         "sub_train": DataLoader(TrajDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=False),
     }
 
-    # 3. 定点量化基线
     if args.bitflip == 'fixed':
         with torch.no_grad():
             for _, param in model.named_parameters():
@@ -454,16 +413,9 @@ def main():
     for k in METRIC_KEYS:
         print(f"    {k:12s}: {base[k]:.4f}")
 
-    # 4. 无边界保护的故障注入测试
     print("\n[2] 故障注入测试 (无边界保护):")
     results_no = []
-    # for fr in fault_rates:
-    #     res = eval_fault(model, data_loader_dict, fr, args.iterations,
-    #                      args.bitflip, args.n_word, args.n_frac, args.n_int)
-    #     results_no.append(res)
-    #     print(f"  {fr:.0e}: acc={res['accuracy']:.4f} macro_f1={res['macro_f1']:.4f}")
 
-    # 5. 边界保护(Ranger 或 GABO)
     print(f"\n[3] 边界保护 ({args.search_bound}):")
     model_protected = apply_bound_protection(model, data_loader_dict, device,
                                              bitflip=args.bitflip, relu_bound=args.relu_bound,
@@ -487,7 +439,6 @@ def main():
               f"| 平均改动权重数={res['n_changed_weights']:.1f} "
               f"(±{res['n_changed_weights_std']:.1f})")
 
-    # 6. 汇总对比
     print("\n" + "=" * 68)
     print(f"{'Rate':>8s} | {'无保护F1':>9s} | {'有保护F1':>9s} | {'提升':>8s}")
     print("-" * 68)

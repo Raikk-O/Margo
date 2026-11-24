@@ -1,26 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-GABO_bounds (回归版, 统计量消融) — 轨迹预测任务的 GABO 初始化消融变体
-================================================================================
-基于 ``gabo_reg.py`` 的回归版 GABO 完整移植, 额外支持对边界初始化阶段的三个
-"分布感知统计量"做 leave-one-out 消融:
 
-  * 特征熵   entropy   : ``custom_entropy * 0.05``  -> 上百分位数 P_high 的 β·H 项
-  * 偏度     skewness  : ``abs(custom_skewness)``   -> 上下百分位数的 |γ| 项
-  * 自适应IQR adaptive : ``np.log(n) * 0.5``       -> 样本量自适应项 α·lnN
-
-消融模式(``ablation`` 参数):
-  "full"       完整 GABO (熵 + 偏度 + 自适应IQR)
-  "no_entropy" 去掉特征熵 (β·H = 0)
-  "no_skew"    去掉偏度     (|γ| = 0)
-  "fixed_iqr"  去掉全部统计量 (α·lnN = |γ| = β·H = 0, 退回固定百分位数 IQR)
-
-对外契约与 gabo_reg.GABO_bounds 完全一致:
-    results, tresh, alpha = GABO_bounds(model, data_loader_dict, device, ...)
-
-其余逻辑(可微搜索、损失增量目标、FDE 惩罚、保护比例、Adam 梯度上升)
-与 gabo_reg.py 保持 1:1 一致, 仅初始化统计量可开关。
-"""
 
 import torch
 import torch.nn as nn
@@ -28,9 +6,6 @@ import numpy as np
 import copy
 
 
-# =============================================================================
-# 消融模式定义
-# =============================================================================
 ABLATION_MODES = {
     "full":       dict(use_entropy=True,  use_skewness=True,  use_adaptive=True),
     "no_entropy": dict(use_entropy=False, use_skewness=True,  use_adaptive=True),
@@ -39,11 +14,8 @@ ABLATION_MODES = {
 }
 
 
-# ==========================================
-# 0. 分布感知统计量 (特征熵 + 偏度 + 自适应 IQR)
-# ==========================================
 def _feature_entropy(x, n_bins=256):
-    """Shannon entropy (bits) of the histogram of ``x``."""
+    
     x = np.asarray(x, dtype=np.float64).ravel()
     if x.size == 0:
         return 0.0
@@ -61,7 +33,7 @@ def _feature_entropy(x, n_bins=256):
 
 
 def _skewness(x):
-    """Sample skewness of ``x``."""
+    
     x = np.asarray(x, dtype=np.float64).ravel()
     if x.size == 0:
         return 0.0
@@ -74,26 +46,13 @@ def _skewness(x):
 def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewness,
                use_entropy=True, use_skewness=True, use_adaptive=True,
                bound_method="shrink_iqr_adaptive"):
-    """IQR based bounds with dynamic percentiles/factor.
-
-    额外暴露三个自适应项开关:
-      use_entropy  : 特征熵项 ``custom_entropy * 0.05`` (β·H)
-      use_skewness : 偏度项 ``abs(custom_skewness)`` (|γ|)
-      use_adaptive : 样本量自适应项 ``np.log(n) * 0.5`` (α·lnN)
-
-    bound_method:
-      "shrink_iqr_adaptive" : 自适应 IQR 收缩 (统计量调制分位点的自适应 IQR)
-    """
+    
     features = np.asarray(features, dtype=np.float64).ravel()
     n = len(features)
     if n == 0:
         return 0.0, 0.0
 
     if bound_method == "shrink_iqr_adaptive":
-        # 自适应 IQR 收缩 (v6): 参照 Tukey 的统计量调制分位点(样本量/偏度/熵),
-        # 得到自适应 IQR, 但上界用 shrink_iqr 的 1 - κ·IQR/max 收缩(而非 q3+factor·IQR)。
-        #   分位点: q1 = percentile(pos, base_low - logN - |skew|)
-        #            q3 = percentile(pos, base_up + logN + |skew| + entropy)
         max_act = float(np.max(features))
         pos = features[features > 0]
         if pos.size == 0:
@@ -101,10 +60,8 @@ def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewnes
         q1 = np.percentile(pos, 25.0)
         q3 = np.percentile(pos, 75.0)
         iqr = q3 - q1
-        # IQR 主项: 相对离散度驱动的自适应收缩
         iqr_ratio = float(np.clip(iqr / max_act, 0.0, 1.0))
         base = 0.95 - 0.35 * iqr_ratio
-        # 统计量修正项: 归一化后直接加减在收缩比例上(偏度 + 熵)
         skew_norm = float(np.tanh(abs(custom_skewness) / 2.0)) if use_skewness else 0.0
         entropy_norm = min(custom_entropy / 8.0, 1.0) if use_entropy else 0.0
         shrink_ratio = float(np.clip(base - 0.10 * skew_norm - 0.10 * entropy_norm, 0.60, 0.95))
@@ -123,17 +80,14 @@ def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewnes
 
 def _dynamically_adjust_upper_bound(final_upper_bound, custom_max_value,
                                     threshold_ratio=0.5, correction_factor=0.9):
-    """Guards against an IQR bound that sits far below the real maximum."""
+    
     if final_upper_bound < custom_max_value * threshold_ratio:
         return float(custom_max_value * correction_factor)
     return float(final_upper_bound)
 
 
-# ==========================================
-# 1. 可微搜索模块 (Differentiable Search Module)
-# ==========================================
 class SearchableBoundedReLU(nn.Module):
-    """在搜索阶段临时替换 nn.ReLU 的模块。"""
+    
 
     def __init__(self, initial_upper_bound):
         super().__init__()
@@ -144,9 +98,6 @@ class SearchableBoundedReLU(nn.Module):
         return torch.clamp(x, max=self.upper_bound)
 
 
-# ==========================================
-# 2. 回归版损失函数 (与训练目标对齐)
-# ==========================================
 def regression_loss_increment(pred, target, baseline_loss, fde_weight=3.0):
     loss_regular = torch.mean((pred[:, :, :3] - target[:, :, :3]) ** 2)
 
@@ -163,8 +114,7 @@ def regression_loss_increment(pred, target, baseline_loss, fde_weight=3.0):
 
 
 def _haversine_ade(pred, y_true_raw, anchor_lats, anchor_lons, feat_min, feat_max):
-    """可微的 ADE(海里): 反归一化 -> 反算绝对位置 -> Haversine -> 平均距离。
-    作为 GABO 梯度上升的代理目标(替代 MSE loss increment)。"""
+    
     if feat_min is not None and feat_max is not None:
         feat_min_t = torch.as_tensor(feat_min, device=pred.device, dtype=pred.dtype)
         feat_max_t = torch.as_tensor(feat_max, device=pred.device, dtype=pred.dtype)
@@ -183,19 +133,16 @@ def _haversine_ade(pred, y_true_raw, anchor_lats, anchor_lons, feat_min, feat_ma
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = torch.sin(dlat / 2.0) ** 2 + torch.cos(lat1) * torch.cos(lat2) * torch.sin(dlon / 2.0) ** 2
-    a = torch.clamp(a, 0.0, 1.0 - 1e-8)   # 数值保护: 防止 asin 越界产生 nan
+    a = torch.clamp(a, 0.0, 1.0 - 1e-8)   
     c = 2.0 * torch.asin(torch.sqrt(a))
     return torch.mean(3440.065 * c)
 
 
-# ==========================================
-# 3. 核心优化器：梯度上升搜索边界
-# ==========================================
 def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_ratio,
                            fde_weight, max_iter, verbose, ablation="full",
                            correct_threshold=0.1, bound_method="shrink_iqr_adaptive",
                            feat_min=None, feat_max=None):
-    """通过梯度上升寻找最优上界 lambda (目标: Minimize Loss Increment)。"""
+    
     if ablation not in ABLATION_MODES:
         raise ValueError(f"未知 ablation 模式: {ablation!r}, 可选 {sorted(ABLATION_MODES)}")
     abl = ABLATION_MODES[ablation]
@@ -279,7 +226,6 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
                                     use_adaptive=abl["use_adaptive"],
                                     bound_method=bound_method)
 
-        # 保护机制: θthr/θcorr 修正 + protect_ratio 下界保护
         up_iqr = _dynamically_adjust_upper_bound(up_iqr, max_act, threshold_ratio=correct_threshold)
         iqr_upper = min(up_iqr, max_act)
         protect_lower = max_act * protect_ratio
@@ -313,7 +259,6 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
             print(f"  层 {name}: Max={s['max_act']:.3f}, IQR_Upper={s['iqr_upper']:.3f}, "
                   f"Protect_Lower={s['protect_lower']:.3f}, Init_Lambda={s['init_lambda']:.3f}")
 
-    # 2. 替换模型中的 ReLU 为 SearchableBoundedReLU
     search_model = copy.deepcopy(model)
     lambda_params = {}
 
@@ -394,33 +339,12 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
     return results, tresh, alpha
 
 
-# ==========================================
-# 4. 对外统一接口 (兼容 Ranger_bounds)
-# ==========================================
 def GABO_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fixed',
                 max_samples=2048, protect_ratio=0.8, fde_weight=3.0,
                 max_iter=100, verbose=True, ablation="full",
                 correct_threshold=0.1, bound_method="shrink_iqr_adaptive",
                 feat_min=None, feat_max=None):
-    """
-    GABO 边界搜索主入口 (回归版, 支持初始化统计量消融)。
-
-    与 gabo_reg.GABO_bounds 同契约, 额外参数:
-
-    ``ablation``
-        "full"       : 完整 GABO (熵 + 偏度 + 自适应IQR)
-        "no_entropy" : 去掉特征熵项 (β·H = 0)
-        "no_skew"    : 去掉偏度项 (|γ| = 0)
-        "fixed_iqr"  : 去掉全部统计量 (固定百分位 IQR)
-
-    ``correct_threshold``
-        θthr 修正阈值: 当 up_iqr < correct_threshold*max_act 时才重置为 0.9*max_act。
-
-    ``bound_method``
-        "shrink_iqr_adaptive" : 自适应 IQR 收缩 (统计量调制分位点的自适应 IQR)
-
-    返回: (results_DMA, tresh, alpha), 与 Ranger_bounds 接口一致。
-    """
+    
     if 'sub_train' not in data_loader_dict:
         raise ValueError("GABO_bounds requires 'sub_train' key in data_loader_dict")
 

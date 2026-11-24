@@ -1,26 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-GABO_bounds (ablation variant) — GABO 初始化统计量消融版
-================================================================================
-基于 ``gabo_multiclass.py`` 的多分类 GABO 移植, 额外支持对边界初始化阶段的
-三个"分布感知统计量"做 only-one 消融(每次只保留单个统计量, 考察其独立贡献):
 
-  * 特征熵   entropy   : ``custom_entropy * 0.05``  -> 上百分位数 P_high 的 β·H 项
-  * 偏度     skewness  : ``abs(custom_skewness)``   -> 上下百分位数的 |γ| 项
-  * 自适应IQR adaptive : ``np.log(n) * 0.5``       -> 样本量自适应项 α·lnN
-
-消融模式(``ablation`` 参数):
-  "full"          完整 GABO (熵 + 偏度 + 自适应IQR)
-  "entropy_only"  只保留特征熵     (β·H ≠ 0, |γ| = 0, α·lnN = 0)
-  "skew_only"     只保留偏度       (|γ| ≠ 0, β·H = 0, α·lnN = 0)
-  "adaptive_only" 只保留自适应IQR  (α·lnN ≠ 0, |γ| = 0, β·H = 0)
-
-对外契约与 Ranger_bounds / gabo_multiclass.GABO_bounds 完全一致:
-    results, tresh, alpha = GABO_bounds(model, data_loader_dict, device, ...)
-
-其余逻辑(梯度上升、分类 margin 目标、保护比例、收缩因子、自适应学习率)
-与 gabo_multiclass.py 保持 1:1 一致, 仅初始化统计量可开关。
-"""
 
 import math
 
@@ -29,11 +7,8 @@ import torch
 import torch.nn as nn
 
 
-# =============================================================================
-# statistics helpers (ported from src/ARGS/Args_ana.py, pure numpy)
-# =============================================================================
 def _feature_entropy(x, n_bins=256):
-    """Shannon entropy (bits) of the histogram of ``x``."""
+    
     x = np.asarray(x, dtype=np.float64).ravel()
     if x.size == 0:
         return 0.0
@@ -51,7 +26,7 @@ def _feature_entropy(x, n_bins=256):
 
 
 def _skewness(x):
-    """Sample skewness of ``x``."""
+    
     x = np.asarray(x, dtype=np.float64).ravel()
     if x.size == 0:
         return 0.0
@@ -64,26 +39,13 @@ def _skewness(x):
 def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewness,
                use_entropy=True, use_skewness=True, use_adaptive=True,
                bound_method="shrink_iqr_adaptive"):
-    """
-    IQR based bounds with dynamic percentiles/factor.
-
-    与 Args_ana.iqr_method 1:1 移植, 额外暴露三个自适应项的开关:
-
-      use_entropy  : 是否启用特征熵项 ``custom_entropy * 0.05`` (β·H)
-      use_skewness : 是否启用偏度项 ``abs(custom_skewness)`` (|γ|)
-      use_adaptive : 是否启用样本量自适应项 ``np.log(n) * 0.5`` (α·lnN)
-
-    bound_method:
-      "shrink_iqr_adaptive" : 自适应 IQR 收缩 (统计量调制分位点的自适应 IQR)
-    """
+    
     features = np.asarray(features, dtype=np.float64).ravel()
     n = len(features)
     if n == 0:
         return 0.0, 0.0
 
     if bound_method == "shrink_iqr_adaptive":
-        # 自适应 IQR 收缩 (v6): 参照 Tukey 的统计量调制分位点(样本量/偏度/熵),
-        # 得到自适应 IQR, 但上界用线性归一化映射到 [0.7, 0.95](而非 q3+factor·IQR)。
         max_act = float(np.max(features))
         pos = features[features > 0]
         if pos.size == 0:
@@ -91,10 +53,8 @@ def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewnes
         q1 = np.percentile(pos, 25.0)
         q3 = np.percentile(pos, 75.0)
         iqr = q3 - q1
-        # IQR 主项: 相对离散度驱动的自适应收缩
         iqr_ratio = float(np.clip(iqr / max_act, 0.0, 1.0))
         base = 0.95 - 0.35 * iqr_ratio
-        # 统计量修正项: 归一化后直接加减在收缩比例上(偏度 + 熵)
         skew_norm = float(np.tanh(abs(custom_skewness) / 2.0)) if use_skewness else 0.0
         entropy_norm = min(custom_entropy / 8.0, 1.0) if use_entropy else 0.0
         shrink_ratio = float(np.clip(base - 0.10 * skew_norm - 0.10 * entropy_norm, 0.60, 0.95))
@@ -123,9 +83,6 @@ def _dynamically_adjust_upper_bound(final_upper_bound, custom_max_value,
     return float(final_upper_bound)
 
 
-# =============================================================================
-# hook helpers — key naming kept identical to ranger.py
-# =============================================================================
 def _register_relu_hooks(model, activations, handles, name=''):
     for name1, layer in model.named_children():
         if len(list(layer.children())) == 0:
@@ -143,9 +100,6 @@ def _register_relu_hooks(model, activations, handles, name=''):
             _register_relu_hooks(layer, activations, handles, name + name1)
 
 
-# =============================================================================
-# adaptive learning rate (ported from GABO_imp_test5_2.adjust_learning_rate)
-# =============================================================================
 def _adjust_learning_rate(grad, prev_grad, lr, initial_lr_factor=0.2,
                           scale_factor=2, patience_counter=None, increase_patience=2):
     grad_abs = grad.abs().clamp_min(1e-12)
@@ -171,9 +125,6 @@ def _adjust_learning_rate(grad, prev_grad, lr, initial_lr_factor=0.2,
     return torch.round(lr * 1e5) / 1e5, patience_counter
 
 
-# =============================================================================
-# core: gradient ascent on the bound (与 gabo_multiclass.py 完全一致)
-# =============================================================================
 def _gradient_ascent_bound(margin0, sign_s, grad_act, act, init_lambda,
                            lower_limit, upper_limit, per_neuron,
                            max_iter=50, patience=6,
@@ -199,7 +150,7 @@ def _gradient_ascent_bound(margin0, sign_s, grad_act, act, init_lambda,
     delta = 1e-8
 
     for _ in range(max_iter):
-        deviation = torch.clamp(lam - act, max=0.0)  # min(λ-a, 0): 低于阈值偏差为 0
+        deviation = torch.clamp(lam - act, max=0.0)  
         perturb = (grad_act * deviation).sum(dim=1)
         margin = margin0 + sign_s * perturb
         result = margin.clamp(-1.0, 1.0)
@@ -252,9 +203,6 @@ def _gradient_ascent_bound(margin0, sign_s, grad_act, act, init_lambda,
     return best_lam.detach().clamp(lower_limit, upper_limit)
 
 
-# =============================================================================
-# ablation 模式定义
-# =============================================================================
 ABLATION_MODES = {
     "full":          dict(use_entropy=True,  use_skewness=True,  use_adaptive=True),
     "entropy_only":  dict(use_entropy=True,  use_skewness=False, use_adaptive=False),
@@ -263,33 +211,12 @@ ABLATION_MODES = {
 }
 
 
-# =============================================================================
-# public entry point — drop-in replacement of Ranger_bounds
-# =============================================================================
 def GABO_bounds(model, train_loader, device="cuda", bound_type='layer', bitflip='float',
                 max_iter=100, patience=6, initial_lr_factor=0.2, scale_factor=2,
                 max_samples=2048, protect_ratio=0.0, shrink_ratio=0.4,
                 dynamic_range_factor=1.0, verbose=False, ablation="full",
                 correct_threshold=0.1, bound_method="shrink_iqr_adaptive"):
-    """
-    Search ReLU activation bounds with GABO, 支持初始化统计量消融。
-
-    与 gabo_multiclass.GABO_bounds 同契约, 额外参数:
-
-    ``ablation``
-        "full"          : 完整 GABO (熵 + 偏度 + 自适应IQR)
-        "entropy_only"  : 只保留特征熵项 (β·H ≠ 0)
-        "skew_only"     : 只保留偏度项 (|γ| ≠ 0)
-        "adaptive_only" : 只保留自适应IQR项 (α·lnN ≠ 0)
-
-    ``correct_threshold``
-        θthr 修正阈值: 当 up_iqr < correct_threshold*max_act 时才重置为 0.9*max_act。
-        默认放宽到 0.1(原版 0.5), 让更多层的统计量上界得以保留。
-
-    Returns
-    -------
-    ``(results, tresh, None)`` — 与 Ranger_bounds 同布局。
-    """
+    
     if ablation not in ABLATION_MODES:
         raise ValueError(f"未知 ablation 模式: {ablation!r}, 可选 {sorted(ABLATION_MODES)}")
     abl = ABLATION_MODES[ablation]
@@ -410,12 +337,6 @@ def GABO_bounds(model, train_loader, device="cuda", bound_type='layer', bitflip=
         if protect_ratio > 0:
             lower_limit = np.maximum(lower_limit, max_act_np * protect_ratio)
         upper_limit = np.maximum(upper_limit, lower_limit)
-        # (消融修复) 不再用 shrink_ratio 强制压上界: 它会把 uppers 的差异统一压到
-        # shrink*max_act, 使熵/偏度/自适应IQR 的消融变体结果一致。让 upper_limit
-        # 由统计量上界 (uppers + std) 决定, 统计量差异才能真正体现出来。
-        # if shrink_ratio < 1.0:
-        #     upper_limit = np.minimum(upper_limit, max_act_np * shrink_ratio)
-        #     lower_limit = np.minimum(lower_limit, upper_limit)
 
         init_lambda = float(np.mean(uppers))
 

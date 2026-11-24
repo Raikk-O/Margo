@@ -1,27 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-SAC_bounds — 轨迹回归版 SAC 边界优化 (两阶段, 严格对齐老设计 gabo_SAC.py)
-========================================================================
-Phase 1 (GABO) : 逐层梯度上升 → 初始 λ + 搜索空间锚点
-Phase 2 (SAC)  : 全局联合微调(固定状态 bandit + 直接双向 λ 动作)
 
-与老设计(gabo_SAC.py)对齐的要点:
-  1. 两阶段: GABO 出初始 λ, SAC 微调。
-  2. 动作直接映射 λ = max_act * exp(action * scale), 可收缩也可放大(clamp_to_ranger 可选)。
-  3. 固定上下文 state(单步 MDP, critic 不自举)。
-  4. 奖励 = -故障指标 - penalty_weight*精度惩罚 + protect_bonus_weight*保护比例(稀疏引导)。
-
-保留(与老设计不同但必要的改造):
-  * 故障模型 = BFWP 权重位翻转(向量化, 快照还原, 多次注入聚合 mean/median), 与 eval_fault 对齐。
-  * 边界施加用模块替换(BoundedReLU)而非 hook, 便于配合 BFWP 快照还原。
-  * reward 指标可选 ade / fde / ade_fde(轨迹回归)。
-
-对外接口(与 Ranger_bounds 同契约):
-    results_DMA, tresh, alpha = SAC_bounds(model, data_loader_dict, device, ...)
-    results_DMA/tresh 的 key 用 Ranger 风格('1encoderproj' 等), 与 replace_act_all 一致。
-
-依赖: torch, numpy
-"""
 import copy
 import math
 
@@ -31,9 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# =============================================================================
-# Part 0: 统计辅助 (from Args_ana.py)
-# =============================================================================
 def _feature_entropy(x, n_bins=256):
     x = np.asarray(x, dtype=np.float64).ravel()
     if x.size == 0: return 0.0
@@ -56,7 +30,6 @@ def _skewness(x):
     return float(((x - x.mean()) ** 3).mean() / (s ** 3))
 
 
-# GABO 初始化统计量消融开关: 对应论文 特征熵(β·H) / 偏度(|γ|) / 自适应IQR(α·lnN)
 ABLATION_MODES = {
     "full":       dict(use_entropy=True,  use_skewness=True,  use_adaptive=True),
     "no_entropy": dict(use_entropy=False, use_skewness=True,  use_adaptive=True),
@@ -73,10 +46,6 @@ def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewnes
     if n == 0: return 0.0, 0.0
 
     if bound_method == "shrink_iqr_adaptive":
-        # 自适应 IQR 收缩 (v6): 参照 Tukey 的统计量调制分位点(样本量/偏度/熵),
-        # 得到自适应 IQR, 但上界用 shrink_iqr 的 1 - κ·IQR/max 收缩(而非 q3+factor·IQR)。
-        #   分位点: q1 = percentile(pos, base_low - logN - |skew|)
-        #            q3 = percentile(pos, base_up + logN + |skew| + entropy)
         max_act = float(np.max(features))
         pos = features[features > 0]
         if pos.size == 0:
@@ -84,10 +53,8 @@ def iqr_method(features, custom_mean, custom_std, custom_entropy, custom_skewnes
         q1 = np.percentile(pos, 25.0)
         q3 = np.percentile(pos, 75.0)
         iqr = q3 - q1
-        # IQR 主项: 相对离散度驱动的自适应收缩
         iqr_ratio = float(np.clip(iqr / max_act, 0.0, 1.0))
         base = 0.95 - 0.35 * iqr_ratio
-        # 统计量修正项: 归一化后直接加减在收缩比例上(偏度 + 熵)
         skew_norm = float(np.tanh(abs(custom_skewness) / 2.0)) if use_skewness else 0.0
         entropy_norm = min(custom_entropy / 8.0, 1.0) if use_entropy else 0.0
         shrink_ratio = float(np.clip(base - 0.10 * skew_norm - 0.10 * entropy_norm, 0.60, 0.95))
@@ -117,14 +84,11 @@ def _dynamically_adjust_upper_bound(final_upper_bound, custom_max_value,
 
 
 def _ranger_key(module_path):
-    """named_modules 路径 'encoder.proj.1' -> Ranger key '1encoderproj'。"""
+    
     parts = module_path.split('.')
     return parts[-1] + ''.join(parts[:-1])
 
 
-# =============================================================================
-# Part 1: Hook 辅助 (供 GABO Phase 收集激活)
-# =============================================================================
 def _register_relu_hooks(model, activations, handles, name=''):
     for name1, layer in model.named_children():
         if len(list(layer.children())) == 0:
@@ -142,9 +106,6 @@ def _register_relu_hooks(model, activations, handles, name=''):
             _register_relu_hooks(layer, activations, handles, name + name1)
 
 
-# =============================================================================
-# Part 2: 自适应学习率 (from gabo_SAC.py)
-# =============================================================================
 def _adjust_learning_rate(grad, prev_grad, lr, initial_lr_factor=0.2,
                           scale_factor=2, patience_counter=None, increase_patience=2):
     grad_abs = grad.abs().clamp_min(1e-12)
@@ -165,9 +126,6 @@ def _adjust_learning_rate(grad, prev_grad, lr, initial_lr_factor=0.2,
     return torch.round(lr * 1e5) / 1e5, patience_counter
 
 
-# =============================================================================
-# Part 3: GABO 核心 (回归版梯度上升, 同 gabo_SAC.py)
-# =============================================================================
 def _gradient_ascent_bound_regression(
         residual0, grad_act, act, init_lambda,
         lower_limit, upper_limit, per_neuron,
@@ -190,10 +148,10 @@ def _gradient_ascent_bound_regression(
     obj_stack = []; delta = 1e-8
 
     for _ in range(max_iter):
-        deviation = torch.clamp(lam - act, max=0.0)  # min(λ-a, 0): 低于阈值偏差为 0
+        deviation = torch.clamp(lam - act, max=0.0)  
         perturb = (grad_act * deviation).sum(dim=1)
         residual_perturbed = residual0 + perturb
-        mse_fault = residual_perturbed.mean()  # residual 已是 MSE, 直接取均值
+        mse_fault = residual_perturbed.mean()  
         penalty = F.relu(mse_fault - mse_clean_baseline * (1.0 + tolerance))
         objective = -mse_fault - penalty_weight * penalty
         obj_val = float(objective.detach())
@@ -223,9 +181,6 @@ def _gradient_ascent_bound_regression(
     return best_lam.detach().clamp(lower_limit, upper_limit)
 
 
-# =============================================================================
-# Part 4: GABO Phase (轨迹回归: 输出 (B, T, 4) -> 用"平均输出误差"作标量 residual)
-# =============================================================================
 def gabo_phase(model, train_loader, device, max_samples=2048, protect_ratio=0.95,
                tolerance=0.05, penalty_weight=10.0,
                max_iter=50, patience=6, initial_lr_factor=0.2, scale_factor=2,
@@ -238,13 +193,11 @@ def gabo_phase(model, train_loader, device, max_samples=2048, protect_ratio=0.95
     stats = {}; all_residuals = []; n_seen = 0
 
     for batch in loader:
-        # 轨迹 5 元组 (X, Y, Y_raw, ref_lat, ref_lon)
         data = batch[0].to(device)
-        label = batch[1].to(device)                 # Y, (B, PRED_LEN, FEAT_DIM)
+        label = batch[1].to(device)                 
         activations.clear()
-        out = model(data)                           # (B, PRED_LEN, FEAT_DIM)
-        # 标量化: 每个样本的 MSE(先平方再平均), 避免正负误差相互抵消
-        residual = ((out - label) ** 2).reshape(out.shape[0], -1).mean(dim=1)  # (B,)
+        out = model(data)                           
+        residual = ((out - label) ** 2).reshape(out.shape[0], -1).mean(dim=1)  
 
         for key, act in activations.items():
             grad_act = torch.autograd.grad(
@@ -252,7 +205,6 @@ def gabo_phase(model, train_loader, device, max_samples=2048, protect_ratio=0.95
                 retain_graph=True, allow_unused=True)[0]
             if grad_act is None: continue
             st = stats.setdefault(key, {"act": [], "grad": []})
-            # 轨迹模型的部分 ReLU 激活是 3 维 (B, *, D), GABO 核心要求 2 维 (N, D), 这里按样本展平
             st["act"].append(act.detach().reshape(act.shape[0], -1))
             st["grad"].append(grad_act.detach().reshape(grad_act.shape[0], -1))
         all_residuals.append(residual.detach())
@@ -262,13 +214,13 @@ def gabo_phase(model, train_loader, device, max_samples=2048, protect_ratio=0.95
     for h in handles: h.remove()
     if not stats: return {}, {}, {}, {}, 0.0, {}
 
-    residual0 = torch.cat(all_residuals, dim=0)          # (N,)
-    mse_clean = float(residual0.mean())  # residual 已是 MSE, 直接取均值
+    residual0 = torch.cat(all_residuals, dim=0)          
+    mse_clean = float(residual0.mean())  
     init_lambdas, bounds_dict, tresh_dict, layer_stats, max_acts = {}, {}, {}, {}, {}
 
     for key, st in stats.items():
-        act = torch.cat(st["act"], dim=0)                # (N, D)
-        grad_act = torch.cat(st["grad"], dim=0)          # (N, D)
+        act = torch.cat(st["act"], dim=0)                
+        grad_act = torch.cat(st["grad"], dim=0)          
         act_np = act.detach().cpu().numpy().astype(np.float64)
 
         batch_means = [a.mean(dim=0) for a in st["act"]]
@@ -308,9 +260,6 @@ def gabo_phase(model, train_loader, device, max_samples=2048, protect_ratio=0.95
     return init_lambdas, bounds_dict, tresh_dict, layer_stats, mse_clean, max_acts
 
 
-# =============================================================================
-# Part 5: 有界 ReLU + 向量化位翻转 (BFWP)
-# =============================================================================
 class BoundedReLU(nn.Module):
     def __init__(self, upper_bound):
         super().__init__()
@@ -355,9 +304,6 @@ def _flip_bits_float(t, fault_rate, total_bits=32):
     int_view[idx] ^= torch.bitwise_left_shift(torch.ones_like(b), b)
 
 
-# =============================================================================
-# Part 6: SAC 网络 (同 gabo_SAC.py)
-# =============================================================================
 class SACActor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=128):
         super().__init__()
@@ -400,9 +346,6 @@ class SACCritic(nn.Module):
         return self.q1(sa), self.q2(sa)
 
 
-# =============================================================================
-# Part 7: 环境 (固定状态 bandit + 直接双向 λ 动作 + BFWP + protect_ratio 奖励)
-# =============================================================================
 class BoundEvalEnv:
     def __init__(self, model, data_loader, max_acts, layer_keys, relu_paths, device,
                  fault_rate, bitflip, total_bits, n_frac, n_int, reward_metric='fde',
@@ -412,9 +355,9 @@ class BoundEvalEnv:
                  feat_min=None, feat_max=None):
         self.protect_ratio = protect_ratio
         self.device = device
-        self.max_acts = max_acts              # dict: key -> max_act (Ranger 上界)
-        self.layer_keys = layer_keys          # 有序 key 列表
-        self.relu_paths = relu_paths          # 与 layer_keys 对齐的模块路径
+        self.max_acts = max_acts              
+        self.layer_keys = layer_keys          
+        self.relu_paths = relu_paths          
         self.action_dim = len(layer_keys)
         self.reward_metric = reward_metric
         self.tolerance = tolerance
@@ -432,7 +375,6 @@ class BoundEvalEnv:
         self.feat_min = feat_min
         self.feat_max = feat_max
 
-        # 工作模型(只深拷贝一次) + 权重快照 + 要翻转的 Linear 层
         self._work_model = copy.deepcopy(model).to(device).eval()
         self._lin_names = self._collect_linear_names(self._work_model)
         self._weight_snapshot = {}
@@ -442,10 +384,8 @@ class BoundEvalEnv:
             if mod.bias is not None:
                 self._weight_snapshot[n + '.bias'] = mod.bias.detach().clone()
 
-        # 评估数据(5 元组)缓存
         self.X_val, self.Y_raw_val, self.ref_lats_val, self.ref_lons_val = self._prepare_data(data_loader, eval_samples)
 
-        # 固定上下文 state (老设计)
         state_parts = []
         for key in layer_keys:
             m = max_acts[key]
@@ -482,7 +422,7 @@ class BoundEvalEnv:
         return np.array([self.max_acts[k] for k in self.layer_keys], dtype=np.float32)
 
     def _action_to_lambda(self, action):
-        """老设计: λ = max_act * exp(action * scale), 可收缩/放大, clamp_to_ranger 裁掉放大侧。"""
+        
         if isinstance(action, torch.Tensor):
             action = action.detach().cpu().numpy()
         lambdas = []
@@ -491,7 +431,6 @@ class BoundEvalEnv:
             lam = m * math.exp(float(action[i]) * self.action_scale)
             if self.clamp_to_ranger:
                 lam = min(lam, m)
-            # 下界约束: λ >= max_act * protect_ratio, 防止轨迹回归收缩过度导致 clean ADE/FDE 崩
             lam = max(lam, m * self.protect_ratio)
             lambdas.append(lam)
         return lambdas
@@ -524,21 +463,18 @@ class BoundEvalEnv:
                 if mod.bias is not None:
                     _flip_bits_float(mod.bias, self.fault_rate, self.total_bits)
 
-    # ---- 单次前向 -> {ade, fde} ----
     def _forward_metrics(self):
         with torch.no_grad():
-            pred = self._work_model(self.X_val)     # (B, T, 4) 归一化 [dLat, dLon, SOG, COG]
+            pred = self._work_model(self.X_val)     
             pred = torch.nan_to_num(pred, nan=0.0, posinf=1e4, neginf=-1e4)
-            # 反归一化: 归一化 -> 度(dLat/dLon)
             if self.feat_min is not None and self.feat_max is not None:
                 feat_min = torch.as_tensor(self.feat_min, device=self.device, dtype=pred.dtype)
                 feat_max = torch.as_tensor(self.feat_max, device=self.device, dtype=pred.dtype)
                 pred = pred * (feat_max - feat_min) + feat_min
-            pred_dlat = pred[:, :, 0]   # 预测相对锚点纬度位移(度)
-            pred_dlon = pred[:, :, 1]   # 预测相对锚点经度位移(度)
-            true_dlat = self.Y_raw_val[:, :, 0]   # 真实位移(度)
+            pred_dlat = pred[:, :, 0]   
+            pred_dlon = pred[:, :, 1]   
+            true_dlat = self.Y_raw_val[:, :, 0]   
             true_dlon = self.Y_raw_val[:, :, 1]
-            # 反算绝对位置 = 锚点 + 位移
             anchor_lat = self.ref_lats_val.unsqueeze(1)
             anchor_lon = self.ref_lons_val.unsqueeze(1)
             pred_lat = anchor_lat + pred_dlat
@@ -577,10 +513,10 @@ class BoundEvalEnv:
             return metrics['ade']
         if m == 'fde':
             return metrics['fde']
-        return metrics['ade'] + metrics['fde']  # 'ade_fde'
+        return metrics['ade'] + metrics['fde']  
 
     def evaluate(self, action):
-        """评估一组 action, 返回 (reward, info)。老设计 reward。"""
+        
         lambdas = self._action_to_lambda(action)
         lambdas_arr = np.array(lambdas, dtype=np.float32)
 
@@ -591,17 +527,12 @@ class BoundEvalEnv:
         clean_score = self._score(clean_metrics)
         base_score = self._score(self.baseline_metrics)
 
-        # 归一化 reward: 用相对退化比 + log 压缩, 量级统一且跨数据集可比。
-        #   fault_deg = fault/base (>=1, 无退化=1), clean_deg = clean/base (≈1)
-        #   reward = -log(fault_deg) 量级 ~-3~-5, 对 critic 友好; 方向不变(退化越小越好)
         base = base_score if base_score > 1e-6 else 1e-6
         fault_deg = fault_score / base
         clean_deg = clean_score / base
         reward = -math.log(max(fault_deg, 1e-6))
-        # 硬约束: clean 相对退化惩罚(超过 tolerance 才罚, 与主目标同量纲)
         penalty = max(0.0, clean_deg - (1.0 + self.tolerance))
         reward -= self.penalty_weight * penalty
-        # 稀疏引导: 鼓励有效保护 (λ < max_act)
         n_protected = sum(1 for i, key in enumerate(self.layer_keys) if lambdas[i] < self.max_acts[key])
         protect_ratio = n_protected / self.action_dim
         reward += self.protect_bonus_weight * protect_ratio
@@ -613,9 +544,6 @@ class BoundEvalEnv:
         return float(reward), info
 
 
-# =============================================================================
-# Part 8: Replay Buffer & SAC Agent (bandit, 同 gabo_SAC.py)
-# =============================================================================
 class ReplayBuffer:
     def __init__(self, capacity=10000):
         self.buffer = []; self.capacity = capacity; self.pos = 0
@@ -672,7 +600,7 @@ class SACAgent:
             next_action, next_log_prob = self.actor.sample(next_states_t)
             q1_tgt, q2_tgt = self.critic_target(next_states_t, next_action)
             q_tgt = torch.min(q1_tgt, q2_tgt) - self.alpha * next_log_prob
-            target = rewards_t  # 单步 MDP (bandit)
+            target = rewards_t  
 
         q1, q2 = self.critic(states_t, actions_t)
         critic_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
@@ -697,9 +625,6 @@ class SACAgent:
         return {"critic_loss": critic_loss.item(), "actor_loss": actor_loss.item(), "alpha": self.alpha}
 
 
-# =============================================================================
-# Part 9: 主入口 — 两阶段 SAC (对齐老设计)
-# =============================================================================
 def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fixed',
                reward_metric='fde', fault_rate=1e-6,
                gabo_max_samples=2048, gabo_protect_ratio=0.95,
@@ -711,14 +636,7 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
                feat_min=None, feat_max=None,
                total_bits=32, n_frac=16, n_int=15, verbose=True,
                ablation="full", bound_method="shrink_iqr_adaptive"):
-    """SAC 边界搜索主入口(轨迹回归, 两阶段, 对齐老设计)。
-
-    ``reward_metric``        : 'ade' | 'fde' | 'ade_fde'。
-    ``protect_bonus_weight`` : 老设计奖励里的稀疏保护比例奖励权重。
-    ``action_scale``         : λ = max_act * exp(action * scale) 的双向搜索幅度。
-    ``clamp_to_ranger``      : True 时 λ 不允许超过 Ranger(=max_act)。
-    ``protect_ratio``        : 搜索下界 max_act * protect_ratio。
-    """
+    
     if 'sub_train' not in data_loader_dict:
         raise ValueError("SAC_bounds requires 'sub_train' key in data_loader_dict")
 
@@ -726,7 +644,6 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
     print(" SAC: Two-phase Bound Optimisation (GABO init + bandit SAC)")
     print("=" * 70)
 
-    # Phase 1: GABO
     print("\n[Phase 1] GABO — per-layer gradient ascent")
     init_lambdas, bounds, tresh, layer_stats, mse_clean, max_acts = gabo_phase(
         model=model, train_loader=data_loader_dict, device=device,
@@ -734,7 +651,6 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
         tolerance=tolerance, penalty_weight=penalty_weight, verbose=verbose,
         ablation=ablation, bound_method=bound_method)
 
-    # ReLU key / path 按模块顺序对齐
     relu_paths = [n for n, m in model.named_modules() if isinstance(m, nn.ReLU)]
     layer_keys = [_ranger_key(p) for p in relu_paths]
     layer_keys = [k for k in layer_keys if k in max_acts]
@@ -746,7 +662,6 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
     print(f"\n[GABO] clean MSE baseline : {mse_clean:.6f}")
     print(f"[GABO] layers to optimise : {action_dim}")
 
-    # Phase 2: SAC (bandit, 固定 state, 直接双向 λ)
     print(f"\n[Phase 2] SAC — bandit fine-tuning "
           f"({'Shrink-only, λ ≤ Ranger' if clamp_to_ranger else 'Bidirectional'})")
     env = BoundEvalEnv(
@@ -762,7 +677,6 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
     agent = SACAgent(state_dim=env.state_dim, action_dim=action_dim, device=device, lr=sac_lr)
     state_np = env.state.squeeze(0).cpu().numpy()
 
-    # 热启动: GABO 结果反推 action
     gabo_action = []
     for key in layer_keys:
         m = max_acts[key]
@@ -776,15 +690,12 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
     print(f"[SAC] GABO init → reward={reward_gabo:.6f}  clean={info_gabo['clean_score']:.4f}  "
           f"fault={info_gabo['fault_score']:.4f}")
 
-    # 预热 buffer
     for _ in range(20):
         noise = np.random.normal(0, 0.1, size=action_dim).astype(np.float32)
         noisy_action = np.clip(gabo_action + noise, -1.0, 1.0)
         r, _ = env.evaluate(noisy_action)
         agent.push(state_np, noisy_action, r, state_np, True)
 
-    # 一次性 warm-start 锚定: 直接设置 actor 输出层, 使其初始确定性输出精确等于 GABO 解
-    # (不经训练, 对应论文 "the policy's output layer is anchored ...")
     with torch.no_grad():
         a_anchor = torch.clamp(
             torch.tensor(gabo_action, dtype=torch.float32, device=device), -0.999, 0.999)
@@ -811,7 +722,6 @@ def SAC_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fix
                   f"α={agent.alpha:.4f}  clean={best_info['clean_score']:.4f}  "
                   f"fault={best_info['fault_score']:.4f}  prot={best_info['protect_ratio']:.2f}")
 
-    # 最终结果
     results = {}
     final_lambdas = env._action_to_lambda(best_action)
     for i, key in enumerate(layer_keys):

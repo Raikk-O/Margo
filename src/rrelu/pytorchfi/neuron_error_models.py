@@ -1,4 +1,4 @@
-"""pytorchfi.error_models provides different error models out-of-the-box for use."""
+
 
 import logging
 import random
@@ -8,7 +8,6 @@ import torch
 from rrelu.pytorchfi import core
 from rrelu.pytorchfi.util import random_value
 
-# Helper Functions
 
 
 def random_batch_element(pfi: core.FaultInjection):
@@ -38,9 +37,7 @@ def random_neuron_location(pfi: core.FaultInjection, layer: int = -1):
     return (layer, dim1_rand, dim2_rand, dim3_rand)
 
 
-# Neuron Perturbation Models
 
-# single random neuron error in single batch element
 def random_neuron_inj(pfi: core.FaultInjection, min_val: int = -1, max_val: int = 1):
     b = random_batch_element(pfi)
     (layer, C, H, W) = random_neuron_location(pfi)
@@ -51,7 +48,6 @@ def random_neuron_inj(pfi: core.FaultInjection, min_val: int = -1, max_val: int 
     )
 
 
-# single random neuron error in each batch element.
 def random_neuron_inj_batched(
     pfi: core.FaultInjection,
     min_val: int = -1,
@@ -89,7 +85,6 @@ def random_neuron_inj_batched(
     )
 
 
-# one random neuron error per layer in single batch element
 def random_inj_per_layer(pfi: core.FaultInjection, min_val: int = -1, max_val: int = 1):
     batch, layer_num, c_rand, h_rand, w_rand, value = ([] for i in range(6))
 
@@ -113,7 +108,6 @@ def random_inj_per_layer(pfi: core.FaultInjection, min_val: int = -1, max_val: i
     )
 
 
-# one random neuron error per layer in each batch element
 def random_inj_per_layer_batched(
     pfi: core.FaultInjection,
     min_val: int = -1,
@@ -181,29 +175,24 @@ class single_bit_flip_func(core.FaultInjection):
         return (1 << nbits) + val if val < 0 else self._twos_comp(val, nbits)
 
     def _flip_bit_signed(self, orig_value, max_value, bit_pos):
-        # quantum value
         save_type = orig_value.dtype
         total_bits = self.bits
         logging.info(f"Original Value: {orig_value}")
 
         quantum = int((orig_value / max_value) * ((2.0 ** (total_bits - 1))))
-        twos_comple = self._twos_comp_shifted(quantum, total_bits)  # signed
+        twos_comple = self._twos_comp_shifted(quantum, total_bits)  
         logging.info(f"Quantum: {quantum}")
         logging.info(f"Twos Couple: {twos_comple}")
 
-        # binary representation
         bits = bin(twos_comple)[2:]
         logging.info(f"Bits: {bits}")
 
-        # sign extend 0's
         temp = "0" * (total_bits - len(bits))
         bits = temp + bits
         if len(bits) != total_bits:
             raise AssertionError
         logging.info(f"Sign extend bits {bits}")
 
-        # flip a bit
-        # use MSB -> LSB indexing
         if bit_pos >= total_bits:
             raise AssertionError
 
@@ -216,18 +205,15 @@ class single_bit_flip_func(core.FaultInjection):
         bits_str_new = "".join(bits_new)
         logging.info(f"New bits: {bits_str_new}")
 
-        # GPU contention causes a weird bug...
         if not bits_str_new.isdigit():
             logging.info("Error: Not all the bits are digits (0/1)")
 
-        # convert to quantum
         if not bits_str_new.isdigit():
             raise AssertionError
         new_quantum = int(bits_str_new, 2)
         out = self._twos_comp(new_quantum, total_bits)
         logging.info(f"Out: {out}")
 
-        # get FP equivalent from quantum
         new_value = out * ((2.0 ** (-1 * (total_bits - 1))) * max_value)
         logging.info(f"New Value: {new_value}")
 
@@ -282,13 +268,7 @@ class single_bit_flip_func(core.FaultInjection):
 def random_neuron_single_bit_inj_batched(
     pfi: core.FaultInjection, layer_ranges, batch_random=True
 ):
-    """
-    Args:
-        pfi: The core.FaultInjection in which the neuron fault injection should be instantiated.
-        layer_ranges:
-        batch_random (default True): True if each batch should have a random location, if false, then each
-                                     batch will use the same randomly generated location.
-    """
+    
     pfi.set_conv_max(layer_ranges)
 
     locations = (
@@ -296,7 +276,6 @@ def random_neuron_single_bit_inj_batched(
         if batch_random
         else [random_neuron_location(pfi)] * pfi.batch_size
     )
-    # Convert list of tuples [(1, 3), (2, 4)] to list of list [[1, 2], [3, 4]]
     random_layers, random_c, random_h, random_w = map(list, zip(*locations))
 
     return pfi.declare_neuron_fault_injection(
@@ -310,7 +289,6 @@ def random_neuron_single_bit_inj_batched(
 
 
 def random_neuron_single_bit_inj(pfi: core.FaultInjection, layer_ranges):
-    # TODO Support multiple error models via list
     pfi.set_conv_max(layer_ranges)
 
     batch = random_batch_element(pfi)

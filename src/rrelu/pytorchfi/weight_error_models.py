@@ -1,4 +1,4 @@
-"""pytorchfi.error_models provides different error models out-of-the-box for use."""
+
 
 import random
 from fxpmath import Fxp
@@ -8,32 +8,15 @@ import logging
 import torch
 import numpy as np
 
-#代码主要涉及在深度学习中模拟硬件故障或数值误差的注入，
-#具体是在模型的权重和偏置上引入错误，这些错误可以模拟硬件故障或者在量化过程中可能出现的误差，
-#从而帮助测试和验证模型在不完美硬件环境下的表现
 
-#定义了一个函数random_weight_location，用于随机挑选权重位置
-#参数
-#pfi 一个表示模型或权重信息的对象，提供必要的模型层数，权重维度和形状信息
-#layer 表示层的索引，如果为-1，表示从所有层中随机选择一个层
-#pfi不指定对象的类型， 只要对象有get_total_layers() 这样的方法就可以正常运行
 def random_weight_location(pfi, layer: int = -1):
 
-    #处理layer参数
-    #如果用户未指定具体的层 （即layer==-1），则随机从所有层中选择一个层
-    #pfi.get_total_layers() 获取模型的总层数
     if layer == -1:
         layer = random.randint(0, pfi.get_total_layers() - 1)
 
-    # 获取选中层中的权重维度和形状
-    dim = pfi.get_weights_dim(layer) #例如 二维矩阵返回2 3维张量返回3
-    shape = pfi.get_weights_size(layer) #获取该层权重的形状 （64,3,3）
+    dim = pfi.get_weights_dim(layer) 
+    shape = pfi.get_weights_size(layer) 
 
-    #处理第一个维度
-    # 如果是shape = (32, 3, 3, 64) 那么 dim0_shape = shape[0]就是32？
-    # 是的，如果shape = (32, 3, 3, 64)，那么dim0_shape = shape[0]的值就是32。
-    # 这意味着：第一维度（dim0_shape）：32，通常表示输入通道数或特征图数量
-    # （如卷积层的输入通道数）。
     dim0_shape = shape[0]
     k = random.randint(0, dim0_shape - 1)
     if dim > 1:
@@ -53,9 +36,6 @@ def random_weight_location(pfi, layer: int = -1):
     return ([layer], [k], [dim1_rand], [dim2_rand], [dim3_rand])
 
 
-# Weight Perturbation Models
-#权重和偏置注入模型
-#可以模拟硬件在计算时可能发生的位翻转，模拟量化过程中可能出现的误差
 def random_weight_inj(
     pfi, corrupt_layer: int = -1, min_val: int = -1, max_val: int = 1
 ):
@@ -74,8 +54,6 @@ def zero_func_rand_weight(pfi: core.FaultInjection):
         function=_zero_rand_weight, layer_num=layer, k=k, dim1=c_in, dim2=kH, dim3=kW
     )
 
-#位级操作
-#代码中使用了二进制转换，补码转换等位级操作，来模拟浮点数和整数之间的转换以及模拟位翻转
 
 def bit2float(b, device=torch.device('cpu'), num_e_bits=8, num_m_bits=23, bias=127.):
     expected_last_dim = num_m_bits + num_e_bits + 1
@@ -86,21 +64,17 @@ def bit2float(b, device=torch.device('cpu'), num_e_bits=8, num_m_bits=23, bias=1
     m = torch.index_select(b, -1, torch.arange(1 + num_e_bits,
                                              1 + num_e_bits + num_m_bits, device=device))
     
-    ## SIGN BIT    
     out = (torch.pow((torch.ones(1, device=device) * -1), s)).squeeze(-1).type(dtype)
     
-    ## EXPONENT BIT
     exponents = -torch.arange(-(num_e_bits - 1.), 1., device=device)
     exponents = exponents.repeat(b.shape[:-1] + (1,))
     e_decimal = torch.sum(e * torch.pow(torch.ones(1, device=device) * 2, exponents), dim=-1) - bias
     out *= torch.pow(torch.ones(1, device=device) * 2, e_decimal)
     
-    ## MANTISSA
     matissa = (torch.pow((torch.ones(1, device=device) * 2), -torch.arange(1., num_m_bits + 1., device=device))).repeat(m.shape[:-1] + (1,))
     
     out *= 1. + torch.sum(m * matissa, dim=-1)
     
-    #Correcting 0 and inf
     out[torch.abs(out) < 5e-30] = 0
     out[out == float("inf")] = 10e30
     out[out == float("-inf")] = -10e30
@@ -111,24 +85,19 @@ def bit2float(b, device=torch.device('cpu'), num_e_bits=8, num_m_bits=23, bias=1
 
 
 def float2bit(f, device=torch.device('cpu'), num_e_bits=8, num_m_bits=23, bias=127., dtype=torch.float32):
-    ## SIGN BIT
     s = torch.sign(f)
     f = f * s
     
-    # turn sign into sign-bit
     s = (s * (-1) + 1.) * 0.5
     s = s.unsqueeze(-1)
     s[s == 0.5] = 0
 
-    ## EXPONENT BIT
     e_scientific = torch.floor(torch.log2(f))
     e_decimal = e_scientific + bias
     e = integer2bit(e_decimal, num_bits=num_e_bits, device=device)
     e = torch.nan_to_num(e)
     e[e == float("inf")] = 0
     e[e == float("-inf")] = 0
-    # print(e)
-    ## MANTISSA
     int_precision = 1024
     m1 = integer2bit(f - f % 1, num_bits=int_precision, device=device)
     m2 = remainder2bit(f % 1, num_bits=bias, device=device)
@@ -137,7 +106,6 @@ def float2bit(f, device=torch.device('cpu'), num_e_bits=8, num_m_bits=23, bias=1
     dtype = f.type()
     
     idx = torch.arange(num_m_bits, device=device).unsqueeze(0).type(dtype) + (float(int_precision) - e_scientific).unsqueeze(-1)
-    # print(idx)
 
     idx[idx == float("inf")] = 0
     idx[idx == float("-inf")] = 0
@@ -149,7 +117,6 @@ def float2bit(f, device=torch.device('cpu'), num_e_bits=8, num_m_bits=23, bias=1
     
     out = torch.cat([s, e, m], dim=-1).type(dtype)
     out = out.detach()
-    # print(out.shape)
     return out
 
 
@@ -169,15 +136,15 @@ def integer2bit(integer, num_bits=32, device=torch.device('cpu')):
     return (out - (out % 1)) % 2
 
 
-def quantized_int2bit(qint_tensor, qbit, device=torch.device('cpu')):       #converts a tensor of integers into binary
+def quantized_int2bit(qint_tensor, qbit, device=torch.device('cpu')):       
     qint_tensor = qint_tensor.type(torch.int)
     mask = 2 ** torch.arange(qbit - 1, -1, -1).to(qint_tensor.device, qint_tensor.dtype)
     return qint_tensor.unsqueeze(-1).bitwise_and(mask).ne(0).to(torch.float)
 
 
-def quantized_bit2int(qbinary_tensor, qbit, device=torch.device('cpu')):    #converts binary into integers tensor
+def quantized_bit2int(qbinary_tensor, qbit, device=torch.device('cpu')):    
     mask = 2 ** torch.arange(qbit - 1, -1, -1).to(qbinary_tensor.device, qbinary_tensor.dtype)
-    mask[0] = -mask[0]      #MSB is sign bit
+    mask[0] = -mask[0]      
     return torch.sum(mask * qbinary_tensor, -1)
 
 def _zero_rand_weight(data, location):
@@ -194,29 +161,24 @@ def twos_comp_shifted(val, nbits):
 
 
 def flip_bit_signed(orig_value, max_value, bit_pos):
-        # quantum value
         save_type = orig_value.dtype
         total_bits = 31
         logging.info(f"Original Value: {orig_value}")
 
         quantum = int((orig_value / max_value) * ((2.0 ** (total_bits - 1))))
-        twos_comple = twos_comp_shifted(quantum, total_bits)  # signed
+        twos_comple = twos_comp_shifted(quantum, total_bits)  
         logging.info(f"Quantum: {quantum}")
         logging.info(f"Twos Couple: {twos_comple}")
 
-        # binary representation
         bits = bin(twos_comple)[2:]
         logging.info(f"Bits: {bits}")
 
-        # sign extend 0's
         temp = "0" * (total_bits - len(bits))
         bits = temp + bits
         if len(bits) != total_bits:
             raise AssertionError
         logging.info(f"Sign extend bits {bits}")
 
-        # flip a bit
-        # use MSB -> LSB indexing
         if bit_pos >= total_bits:
             raise AssertionError
 
@@ -229,18 +191,15 @@ def flip_bit_signed(orig_value, max_value, bit_pos):
         bits_str_new = "".join(bits_new)
         logging.info(f"New bits: {bits_str_new}")
 
-        # GPU contention causes a weird bug...
         if not bits_str_new.isdigit():
             logging.info("Error: Not all the bits are digits (0/1)")
 
-        # convert to quantum
         if not bits_str_new.isdigit():
             raise AssertionError
         new_quantum = int(bits_str_new, 2)
         out = twos_comp(new_quantum, total_bits)
         logging.info(f"Out: {out}")
 
-        # get FP equivalent from quantum
         new_value = out * ((2.0 ** (-1 * (total_bits - 1))) * max_value)
         logging.info(f"New Value: {new_value}")
 
@@ -270,19 +229,15 @@ def bit_flip_weight_fixed(data, location , bit = None , total_bits = None ,n_fra
     if not bits_str_new.isdigit():
         print("Error: Not all the bits are digits (0/1)")
 
-    # convert to quantum
     assert bits_str_new.isdigit()
     FXP_value = x("0b"+bits_str_new)
     new_value = FXP_value.astype(float)
 
     return torch.tensor(new_value)
 def int2bin(input, num_bits):
-    '''
-    convert the signed integer value into unsigned integer (2's complement equivalently).
-    Note that, the conversion is different depends on number of bit used.
-    '''
+    
     output = input.clone()
-    if num_bits == 1: # when it is binary, the conversion is different
+    if num_bits == 1: 
         output = output/2 + .5
     elif num_bits > 1:
         output[input.lt(0)] = 2**num_bits + output[input.lt(0)]
@@ -291,11 +246,7 @@ def int2bin(input, num_bits):
 
 
 def bin2int(input, num_bits):
-    '''
-    convert the unsigned integer (2's complement equivantly) back to the signed integer format
-    with the bitwise operations. Note that, in order to perform the bitwise operation, the input
-    tensor has to be in the integer format.
-    '''
+    
     if num_bits == 1:
         output = input*2-1
     elif num_bits > 1:
@@ -306,16 +257,13 @@ def bin2int(input, num_bits):
 
 def bit_flip_weight_int(data, location , bit = None , total_bits = None ,n_frac = None , n_int = None):
     orig_value = torch.tensor([data[location].item()],dtype=torch.int) 
-    # print(orig_value)
-    twos_comple = twos_comp_shifted(orig_value, total_bits)  # signed
+    twos_comple = twos_comp_shifted(orig_value, total_bits)  
     bits = bin(twos_comple)[2:]
     temp = "0" * (total_bits - len(bits))
     bits = temp + bits
     if len(bits) != total_bits:
         raise AssertionError
         
-    # flip a bit
-    # use MSB -> LSB indexing
     if bit >= total_bits:
         raise AssertionError
 
@@ -328,11 +276,9 @@ def bit_flip_weight_int(data, location , bit = None , total_bits = None ,n_frac 
     bits_str_new = "".join(bits_new)
     
 
-    # GPU contention causes a weird bug...
     if not bits_str_new.isdigit():
         logging.info("Error: Not all the bits are digits (0/1)")
 
-    # convert to quantum
     if not bits_str_new.isdigit():
         raise AssertionError
     new_quantum = int(bits_str_new, 2)
@@ -343,18 +289,10 @@ def bit_flip_weight_IEEE(data, location , bit = None , total_bits = None ,n_frac
     orig_value = torch.tensor([data[location].item()]) 
     total_bits = total_bits    
     bit_pos = bit
-    # print(bit_pos)
-    # binary representation
     bits= float2bit(orig_value)
-    # print(bits)
     bit_loc = total_bits - bit_pos - 1
-    # if bits[0,bit_loc] == 0:
-    #     bits[0,bit_loc] = 1
-    # else:
-    #     bits[0,bit_loc] = 0
     bits[0,bit_loc] = torch.logical_xor(bits[0,bit_loc],torch.tensor(1.0)).float()    
     new_value = bit2float(bits)
-    # print(orig_value,new_value)
 
     return torch.tensor(new_value[0])
 
@@ -565,11 +503,8 @@ def floatingPoint(real_no):
     else:
         ind = int_str.index('1')
     exp_str = bin((len(int_str) - ind - 1) + 127)[2:]
-    # print(exp_str)
-    # print(fraction_str)
     mant_str = int_str[ind + 1:] + fraction_str
     mant_str = mant_str + ('0' * (23 - len(mant_str)))
-    # print(mant_str)
     ieee_32 = str(sign_bit) + exp_str  + mant_str
     return ieee_32
 

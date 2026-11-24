@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-# 初始化全局变量 activation
 activation = {}
 
 def get_activation(name):
@@ -20,15 +19,12 @@ def relu_hooks(model: nn.Module, name=''):
         else:
             relu_hooks(layer, name + name1)
 
-# Ranger_bounds 函数
 def Ranger_bounds(model: nn.Module, train_loader, device="cuda", bound_type='layer', bitflip='float'):
     model.eval()
     iteration = True
     results = {}
     tresh = {}
 
-    # print(model, train_loader, device, bound_type, bitflip)
-    # 注册钩子函数
     relu_hooks(model, name='')
 
     for data, label in train_loader['sub_train']:
@@ -37,7 +33,6 @@ def Ranger_bounds(model: nn.Module, train_loader, device="cuda", bound_type='lay
         model = model.to(device)
         output = model(data)
 
-        # print("Output shape:", output.shape)
 
         if iteration:
             for key, val in activation.items():
@@ -45,9 +40,6 @@ def Ranger_bounds(model: nn.Module, train_loader, device="cuda", bound_type='lay
                 tresh[key] = val
             iteration = False
 
-        # print("Activation dictionary after forward pass:")
-        # for key, val in activation.items():
-        #     print(f"{key}: {val.shape}")
 
         for key, val in activation.items():
             prev_max = torch.max(results[key], dim=0)[0]

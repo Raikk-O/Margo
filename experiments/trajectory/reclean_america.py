@@ -1,23 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-AmericanAIS 数据清洗 -> 轨迹预测窗口数据
-======================================================================
-AmericanAIS 是原始 AIS 单文件格式(与 DMA 的 aisdk-*.csv 一致, 无 synopses/dynamic 之分),
-字段: mmsi / base_date_time / longitude / latitude / sog / cog / heading / status / ...
 
-处理流程(复用 reclean_pireaus.py 的骨架, 去掉 merge 步骤):
-  1. 逐日读取(15 个文件) -> 选列/改名
-  2. 清洗: 去 NaN / SOG 越界 / COG 越界 / 去重 / 过滤停船(锚泊1/系泊5 + 速度阈值)
-  3. 按船 + 时间间隙切段 -> 等间隔重采样(COG 用 sin/cos 圆周插值) -> 滑窗 42
-
-输出格式与 TrajectorDecodeTrain.py 的 TrajectoryDataset 对齐:
-    Latitude / Longitude / SOG / COG / segment_id, 每 42 行 = 一个连续轨迹窗口。
-
-用法
-----
-    python reclean_america.py --rate 120s --gap 1800s --output data/AmericanAis/windows_america_120s.csv
-    python reclean_america.py --rate 600s --gap 7200s --output data/AmericanAis/windows_america_600s.csv
-"""
 import argparse
 import json
 import os
@@ -25,35 +6,24 @@ import os
 import numpy as np
 import pandas as pd
 
-TOTAL_LEN = 42           # HIST_LEN(18) + PRED_LEN(24)
-HIST_LEN = 18            # 锚点取历史最后一步(index 17), 预测相对该锚点的位移
-MAX_SOG = 30.0           # SOG 上限
+TOTAL_LEN = 42           
+HIST_LEN = 18            
+MAX_SOG = 30.0           
 
-# 归一化特征列: 经纬度改为相对锚点位移(dLat/dLon)。
-# 原方案对绝对经纬度做全局 min-max, 但 AmericanAIS 地理跨度巨大(纬度 39°、经度 307°),
-# 把轨迹内真实移动(600s 约 0.03~0.05°)压缩到 ~1e-4, 模型学不到运动信号, ADE 高达数百海里。
-# 改为相对位移后, dLat/dLon 量级为 ±几度, min-max 归一化合理且可学习。
 FEATURE_COLS = ["dLat", "dLon", "SOG", "COG"]
 
-DATA_DIR = r"D:\SBFA\datasets\AmericanAIS"  # 请根据实际数据路径修改
+DATA_DIR = r"D:\SBFA\datasets\AmericanAIS"  
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "data", "AmericanAis")
 
-# 锚泊(1) / 系泊(5) / 搁浅(6) -> 停船, 过滤
 MOORED_ANCHORED_STATUS = {1, 5, 6}
 
 USECOLS = ["mmsi", "base_date_time", "longitude", "latitude", "sog", "cog", "heading", "status"]
 
-# 港口预设(地理框定): 把数据限制到单一港口区域, 避免地理跨度过大。
-# 参考 ProcessAisDMA.py 的思路——DMA 数据本身就只覆盖单一港口, 所以绝对位置归一化才合理。
 PORTS = {
-    # 休斯顿港: 加尔维斯顿湾(Galveston Bay) + 休斯顿航道(Houston Ship Channel) + 海湾入口
-    "houston": (29.0, 30.1, -95.6, -94.2),   # (lat_min, lat_max, lon_min, lon_max)
-    # 洛杉矶/长滩港: 圣佩德罗湾(San Pedro Bay), 美国西海岸最大港口
+    "houston": (29.0, 30.1, -95.6, -94.2),   
     "losangeles": (33.4, 34.0, -118.6, -117.8),
-    # 纽约/新泽西港: 纽约湾(New York Harbor), 美国东海岸最大港口
     "newyork": (40.2, 41.0, -74.5, -73.5),
-    # 新奥尔良港: 密西西比河下游(Mississippi River) + 墨西哥湾入海口
     "neworleans": (28.7, 30.3, -90.6, -89.1),
 }
 
@@ -70,7 +40,7 @@ def load_day(path):
 
 
 def filter_bbox(df, bbox):
-    """地理框定: 只保留 bbox=(lat_min, lat_max, lon_min, lon_max) 内的记录。"""
+    
     lat_min, lat_max, lon_min, lon_max = bbox
     before = len(df)
     df = df[(df["lat"] >= lat_min) & (df["lat"] <= lat_max) &
@@ -84,9 +54,7 @@ def filter_invalid(df, min_speed, max_sog):
     before = len(df)
     df = df[(df["sog"] >= 0) & (df["sog"] <= max_sog)]
     df = df[(df["cog"] >= 0) & (df["cog"] < 360)]
-    # 过滤锚泊/系泊/搁浅(status 为 NaN 的保留, 靠速度阈值兜底)
     df = df[df["status"].isna() | (~df["status"].isin(MOORED_ANCHORED_STATUS))]
-    # 停船: 速度过低
     df = df[df["sog"] >= min_speed]
     df = df.drop_duplicates(subset=["vid", "t"])
     df = df.sort_values(["vid", "t"]).reset_index(drop=True)
@@ -140,7 +108,6 @@ def segment_and_window(df, rate, gap, min_len, stride, seg_start=0):
                 w = rs.iloc[start:start + TOTAL_LEN]
                 lat_arr = w["lat"].to_numpy(dtype=np.float64)
                 lon_arr = w["lon"].to_numpy(dtype=np.float64)
-                # 锚点 = 历史最后一步(预测起点), 位移相对它计算
                 anchor_lat = float(lat_arr[HIST_LEN - 1])
                 anchor_lon = float(lon_arr[HIST_LEN - 1])
                 windows.append(pd.DataFrame({
@@ -174,7 +141,6 @@ def main():
                     help="地理框定: 港口名(houston)或 lat_min,lat_max,lon_min,lon_max; 默认不框定")
     args = ap.parse_args()
 
-    # 解析地理框定
     bbox = None
     if args.bbox:
         if args.bbox in PORTS:
@@ -188,7 +154,6 @@ def main():
     files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith(".csv")])
     if args.files:
         files = [f.strip() for f in args.files.split(",") if f.strip()]
-    # 默认处理全部文件(全部天数); 如需指定可用 --files
 
     all_windows = []
     seg_offset = 0
@@ -216,7 +181,6 @@ def main():
     n_win = len(out) // TOTAL_LEN
     out = out.iloc[:n_win * TOTAL_LEN]
 
-    # 全局 min-max 归一化(参照 ProcessAisDMA.py: 对绝对特征直接统计全局 min/max)
     stats = {}
     for col in FEATURE_COLS:
         cmin = float(out[col].min())

@@ -1,16 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-PSO / GA / 贝叶斯优化 全局边界优化器 —— 替换 GABO-SAC 第二阶段(SAC)的对比基线。
 
-设计要点(保证与 SAC 对比公平):
-  1. 两阶段框架一致: Phase 1 = GABO 梯度上升(复用 gabo_phase), Phase 2 = 本优化器。
-  2. 评估函数一致: 复用 BoundEvalEnv.evaluate(action), 与 SAC 完全相同的 reward / 故障注入语义。
-  3. 决策变量一致: action ∈ [-1, 1]^L, λ_k = max_act_k * exp(action_k * scale), 默认 clamp 到 Ranger 以内。
-  4. 评估预算对齐: 默认约 280 次评估(≈ SAC 的 30ep×8step + 41 warmup)。
-
-每个函数签名与 GABO_SAC_bounds 对齐:
-  XXX_bounds(model, train_loader, device, fault_injector, **config) -> (results, tresh, None)
-"""
 import os, math, importlib.util
 import numpy as np
 import torch
@@ -25,10 +13,9 @@ _BoundEvalEnv = _gabo.BoundEvalEnv
 _ordered_relu_keys = _gabo._ordered_relu_keys
 
 
-# ==================== 公共组件 ====================
 def _gabo_init(model, train_loader, device, gabo_max_samples, gabo_protect_ratio,
                tolerance, penalty_weight, verbose):
-    """Phase 1: GABO 梯度上升, 返回初始边界 + 逐层最大激活等。"""
+    
     init_lambdas, bounds, tresh, _stats, mse_clean, max_acts = _gabo_phase(
         model=model, train_loader=train_loader, device=device,
         max_samples=gabo_max_samples, protect_ratio=gabo_protect_ratio,
@@ -53,7 +40,7 @@ def _build_env(model, train_loader, device, fault_injector, max_acts, layer_keys
 
 
 def _gabo_action(init_lambdas, max_acts, layer_keys, action_scale):
-    """把 GABO 初始 λ 反推成 action ∈ [-1,1]^L (热启动)。"""
+    
     a = []
     for key in layer_keys:
         m = max_acts[key]
@@ -77,7 +64,6 @@ def _report(name, best_f, reward_gabo, best_info):
           f"fault={best_info['mse_fault']:.6f}  prot={best_info['protect_ratio']:.2f}")
 
 
-# ==================== PSO (粒子群优化) ====================
 def PSO_bounds(model, train_loader, device="cpu", fault_injector=None,
                gabo_max_samples=2048, gabo_protect_ratio=0.7,
                pop_size=20, n_iter=13, w=0.7, c1=1.5, c2=1.5,
@@ -103,7 +89,6 @@ def PSO_bounds(model, train_loader, device="cpu", fault_injector=None,
     reward_gabo, _ = env.evaluate(g0)
 
     rng = np.random.default_rng(0)
-    # 初始化: 第 0 个粒子 = GABO 热启动, 其余混合"GABO 附近噪声 / 均匀收缩区"
     X = np.empty((pop_size, action_dim), dtype=np.float32)
     X[0] = g0
     for i in range(1, pop_size):
@@ -147,7 +132,6 @@ def PSO_bounds(model, train_loader, device="cpu", fault_injector=None,
     return _finalize(env, gbest_X, layer_keys, device), tresh, None
 
 
-# ==================== GA (遗传算法) ====================
 def GA_bounds(model, train_loader, device="cpu", fault_injector=None,
               gabo_max_samples=2048, gabo_protect_ratio=0.7,
               pop_size=20, n_iter=13, mutation_rate=0.1, mutation_scale=0.3,
@@ -190,26 +174,21 @@ def GA_bounds(model, train_loader, device="cpu", fault_injector=None,
 
     _report("GA", gbest_f, reward_gabo, gbest_info)
     for it in range(n_iter):
-        # 精英保留
         order = np.argsort(-fit)
         new_pop = [pop[order[j]].copy() for j in range(elite)]
         while len(new_pop) < pop_size:
-            # 锦标赛选择两个父代
             def _tournament():
                 cand = rng.choice(pop_size, tournament_k, replace=False)
                 return pop[int(cand[np.argmax(fit[cand])])].copy()
             p1, p2 = _tournament(), _tournament()
-            # 均匀交叉
             mask = rng.random(action_dim) < 0.5
             child = np.where(mask, p1, p2).astype(np.float32)
-            # 高斯变异
             child += rng.normal(0.0, mutation_scale, action_dim).astype(np.float32) * \
                 (rng.random(action_dim) < mutation_rate)
             child = np.clip(child, -1.0, 1.0)
             new_pop.append(child)
         pop = np.stack(new_pop)
 
-        # 评估新种群(精英无需重算, 但为简单直接全算)
         fit = np.array([env.evaluate(a)[0] for a in pop])
         bi = int(np.argmax(fit))
         if float(fit[bi]) > gbest_f:
@@ -223,7 +202,6 @@ def GA_bounds(model, train_loader, device="cpu", fault_injector=None,
     return _finalize(env, gbest_X, layer_keys, device), tresh, None
 
 
-# ==================== 贝叶斯优化 (GP + EI) ====================
 def BayesOpt_bounds(model, train_loader, device="cpu", fault_injector=None,
                     gabo_max_samples=2048, gabo_protect_ratio=0.7,
                     n_init=20, n_iter=260,
@@ -278,11 +256,9 @@ def BayesOpt_bounds(model, train_loader, device="cpu", fault_injector=None,
         mu, sigma = gp.predict(X, return_std=True)
         sigma = np.maximum(sigma, 1e-6)
         best_sofar = float(np.max(y))
-        # EI 采集
         z = (mu - best_sofar) / sigma
         ei = (mu - best_sofar) * norm.cdf(z) + sigma * norm.pdf(z)
 
-        # 在 EI 最大的已有点上加扰动 + 随机候选, 取 EI 最大的新点(简化, 避免高维连续优化)
         cands = []
         top_i = int(np.argmax(ei))
         cands.append(np.clip(X[top_i] + rng.normal(0.0, 0.2, action_dim), -1.0, 1.0))
