@@ -493,7 +493,7 @@ def GABO_SAC_bounds(model, train_loader, device="cuda", fault_injector=None,
     layer_keys = [k for k in _ordered_relu_keys(model) if k in max_acts]
     missing = [k for k in max_acts if k not in layer_keys]
     if missing:
-        print(f"[warn] {len(missing)} 个 ReLU key 未匹配到模块顺序, 追加到末尾: {missing}")
+        print(f"[warn] {len(missing)} ReLU keys not matched to module order, appending to end: {missing}")
         layer_keys.extend(sorted(missing))
     action_dim = len(layer_keys)
     if action_dim == 0: return {}, {}, None

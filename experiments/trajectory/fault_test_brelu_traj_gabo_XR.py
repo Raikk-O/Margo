@@ -82,49 +82,49 @@ DATASETS = {
         "csv": os.path.join(SCRIPT_DIR, '..', 'DMA', 'aisdk-2026-08-26', 'windows.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model.pth'),
         "outdir": "results",
-        "desc": "DMA (600s 采样, 预测 4 小时)",
+        "desc": "DMA (600s sampling, 4h prediction)",
     },
     "dma_new": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'DMA', 'windows_dma_600s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_dma_new.pth'),
         "outdir": "results_dma_new",
-        "desc": "DMA 新方案 (相对位移 dLat/dLon, 600s, 3天)",
+        "desc": "DMA new scheme (relative displacement dLat/dLon, 600s, 3 days)",
     },
     "pireaus": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'PireausAIS', 'windows_pireaus_60s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_pireaus.pth'),
         "outdir": "results_pireaus",
-        "desc": "PireausAIS 清洗版 (20s 采样, 预测 8 分钟, 已过滤停船)",
+        "desc": "PireausAIS cleaned (20s sampling, 8min prediction, stationary filtered)",
     },
     "american": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'AmericanAis', 'windows_america_600s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_american.pth'),
         "outdir": "results_american",
-        "desc": "AmericanAIS 600s (10分钟采样, 预测 4 小时, 全15天)",
+        "desc": "AmericanAIS 600s (10min sampling, 4h prediction, all 15 days)",
     },
     "houston": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'AmericanAis', 'houston_600s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_houston.pth'),
         "outdir": "results_houston",
-        "desc": "AmericanAIS 休斯顿港框定 (600s 采样, 预测 4 小时, 全15天)",
+        "desc": "AmericanAIS Houston port bbox (600s sampling, 4h prediction, all 15 days)",
     },
     "losangeles": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'AmericanAis', 'losangeles_600s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_losangeles.pth'),
         "outdir": "results_losangeles",
-        "desc": "AmericanAIS 洛杉矶/长滩港框定 (600s 采样, 预测 4 小时, 全15天)",
+        "desc": "AmericanAIS LA/Long Beach port bbox (600s sampling, 4h prediction, all 15 days)",
     },
     "newyork": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'AmericanAis', 'newyork_600s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_newyork.pth'),
         "outdir": "results_newyork",
-        "desc": "AmericanAIS 纽约/新泽西港框定 (600s 采样, 预测 4 小时, 全15天)",
+        "desc": "AmericanAIS NY/NJ port bbox (600s sampling, 4h prediction, all 15 days)",
     },
     "neworleans": {
         "csv": os.path.join(SCRIPT_DIR, 'data', 'AmericanAis', 'neworleans_600s.csv'),
         "model": os.path.join(SCRIPT_DIR, 'best_trajectory_model_neworleans.pth'),
         "outdir": "results_neworleans",
-        "desc": "AmericanAIS 新奥尔良港框定 (600s 采样, 预测 4 小时, 全15天)",
+        "desc": "AmericanAIS New Orleans port bbox (600s sampling, 4h prediction, all 15 days)",
     },
 }
 DEFAULT_DATASET = "dma"
@@ -423,7 +423,7 @@ def find_bounds(model, data_loader, name, bound_type, bitflip):
                                                    bound_method=_gabo_bound_method)
         return _convert_gabo_keys(results, tresh, alpha)
     if name != 'ranger':
-        print(f"[warn] search_bound='{name}' 的现有实现依赖缺失(gymnasium), 回退到 'ranger'")
+        print(f"[warn] search_bound='{name}' existing impl has missing deps (gymnasium), falling back to 'ranger'")
     return Ranger_bounds(model, data_loader, device=Config.DEVICE,
                          bound_type=bound_type, bitflip=bitflip)
 
@@ -525,15 +525,15 @@ def eval_fault(model: nn.Module, data_loader_dict, fault_rate, iterations=1000,
             types = [str(t).split('.')[-1].split("'")[0] for t in pfi_model.layers_type]
             all_lin = sum(1 for m in model.modules() if isinstance(m, torch.nn.Linear))
             all_rb = sum(1 for m in model.modules() if isinstance(m, Relu_bound))
-            print("    [diag] fault_rate={:.0e}: pfi识别层数={}, 改动权重数={}".format(
+            print("    [diag] fault_rate={:.0e}: pfi layers={}, changed weights={}".format(
                 fault_rate, pfi_model.get_total_layers(), diff))
-            print("    [diag] 模型实际 Linear={}, Relu_bound={}; pfi识别类型: {}".format(
+            print("    [diag] actual model Linear={}, Relu_bound={}; pfi types: {}".format(
                 all_lin, all_rb, types))
             with torch.no_grad():
                 x = next(iter(data_loader_dict['val']))[0][:8].to(device)
                 o1 = pfi_model.original_model(x)
                 o2 = corrupted_model(x)
-                print("    [diag] 输出对比: original[0,0,:2]={}, corrupted[0,0,:2]={}, 最大差={:.4f}".format(
+                print("    [diag] output compare: original[0,0,:2]={}, corrupted[0,0,:2]={}, max diff={:.4f}".format(
                     [round(v, 4) for v in o1[0, 0, :2].tolist()],
                     [round(v, 4) for v in o2[0, 0, :2].tolist()],
                     float((o1 - o2).abs().max())))
@@ -556,16 +556,16 @@ def eval_fault(model: nn.Module, data_loader_dict, fault_rate, iterations=1000,
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--dataset", choices=sorted(DATASETS), default="neworleans",
-                        help="按数据集名一键切换数据/模型/产物目录 (默认 %s)\n" % DEFAULT_DATASET
+                        help="switch data/model/artifact dirs by dataset name (default %s)\n" % DEFAULT_DATASET
                         + "\n".join("  %s: %s -> %s" % (k, v["desc"], v["outdir"])
                                     for k, v in DATASETS.items()))
     parser.add_argument("--data", default=None,
-                        help="数据 CSV (默认取 --dataset 对应的 windows 文件)")
+                        help="data CSV (default: windows file for --dataset)")
     parser.add_argument("--model", default=None,
-                        help="模型权重 (默认取 --dataset 对应的 .pth)")
+                        help="model weights (default: .pth for --dataset)")
     parser.add_argument("--batch_size", type=int, default=Config.BATCH_SIZE)
-    parser.add_argument("--iterations", type=int, default=100, help="每个故障率注入次数")
-    parser.add_argument("--seed", type=int, default=0, help="随机种子(数据划分/故障注入)")
+    parser.add_argument("--iterations", type=int, default=100, help="injection runs per fault rate")
+    parser.add_argument("--seed", type=int, default=0, help="random seed (data split / fault injection)")
 
     parser.add_argument("--n_word", type=int, default=32)
     parser.add_argument("--n_frac", type=int, default=16)
@@ -577,47 +577,47 @@ def main():
     parser.add_argument("--bounds_type", type=str, default="layer", choices=["layer", "neuron"])
     parser.add_argument("--bitflip", type=str, default="fixed", choices=["fixed", "float", "int"])
     parser.add_argument("--fault_rates", type=str, default="1e-7,3e-7,5e-7,7e-7,1e-6")
-    parser.add_argument("--sac_episodes", type=int, default=30, help="SAC 训练 episode 数")
-    parser.add_argument("--sac_steps", type=int, default=20, help="SAC 每 episode 步数")
+    parser.add_argument("--sac_episodes", type=int, default=30, help="SAC training episodes")
+    parser.add_argument("--sac_steps", type=int, default=20, help="SAC steps per episode")
     parser.add_argument("--sac_reward_metric", type=str, default="ade", choices=["ade", "fde", "ade_fde"],
-                        help="SAC reward 最小化的故障指标 (ade/fde/ade_fde)")
+                        help="fault metric minimized by SAC reward (ade/fde/ade_fde)")
     parser.add_argument("--sac_fault_rate", type=float, default=1e-6,
-                        help="SAC 训练时的权重位翻转率(应与 --fault_rates 量级一致)")
-    parser.add_argument("--sac_max_samples", type=int, default=2048, help="SAC 评估样本数")
+                        help="weight bit-flip rate during SAC training (should match --fault_rates magnitude)")
+    parser.add_argument("--sac_max_samples", type=int, default=2048, help="SAC eval samples")
     parser.add_argument("--sac_trials", type=int, default=5,
-                        help="SAC 每次故障评估的独立注入次数(取平均, 抑制单次位翻转的方差)")
+                        help="independent injection runs per SAC fault eval (averaged to reduce single-flip variance)")
     parser.add_argument("--sac_reduce", type=str, default="median", choices=["mean", "median"],
-                        help="多次注入的聚合方式: mean=期望退化, median=抗重尾更稳")
+                        help="aggregation over injections: mean=expected degradation, median=robust to heavy tails")
     parser.add_argument("--sac_tolerance", type=float, default=0.05,
-                        help="clean FDE 允许相对基线的退化比例(0.02=2%%, 0.05=5%%)")
+                        help="allowed clean FDE degradation ratio vs baseline (0.02=2%%, 0.05=5%%)")
     parser.add_argument("--sac_penalty_weight", type=float, default=0.0,
-                        help="精度越界惩罚权重(reward 里的 10)")
+                        help="accuracy-violation penalty weight (the 10 in reward)")
     parser.add_argument("--sac_protect_bonus_weight", type=float, default=0.0,
-                        help="保护比例奖励权重(默认 0 关闭: protect_ratio 与 FDE 同量级会污染 reward)")
+                        help="protection-ratio reward weight (default 0 = off: protect_ratio on same scale as FDE pollutes reward)")
     parser.add_argument("--protect_ratio", type=float, default=0.0,
-                        help="边界搜索下限比例 λ>=max_act*ratio(回归任务收缩过度会崩 clean ADE/FDE)")
+                        help="lower-bound ratio for bound search λ>=max_act*ratio (over-shrinking crashes clean ADE/FDE for regression)")
 
 
     parser.add_argument("--gabo_protect_ratio", type=float, default=0.0,
-                        help="GABO 边界下限比例 max_act*ratio: 越低边界越紧、容错越强, 但 clean 损失越大")
-    parser.add_argument("--gabo_fde_weight", type=float, default=3.0, help="GABO FDE 终点惩罚权重")
-    parser.add_argument("--gabo_max_samples", type=int, default=2048, help="GABO 统计+优化样本数")
-    parser.add_argument("--gabo_max_iter", type=int, default=100, help="GABO 梯度上升迭代次数")
+                        help="GABO lower-bound ratio max_act*ratio: lower = tighter bounds & more fault tolerance, but larger clean loss")
+    parser.add_argument("--gabo_fde_weight", type=float, default=3.0, help="GABO FDE endpoint penalty weight")
+    parser.add_argument("--gabo_max_samples", type=int, default=2048, help="GABO stats + optimization samples")
+    parser.add_argument("--gabo_max_iter", type=int, default=100, help="GABO gradient-ascent iterations")
     parser.add_argument("--gabo-ablation", type=str, default="full",
                         choices=["full", "no_entropy", "no_skew", "fixed_iqr"],
-                        help="GABO 初始化统计量消融: full / no_entropy / no_skew / fixed_iqr")
+                        help="GABO init-stats ablation: full / no_entropy / no_skew / fixed_iqr")
     parser.add_argument("--gabo-correct-threshold", type=float, default=0.0,
-                        help="θthr 修正阈值: up_iqr < ratio*max_act 时才重置为 0.9*max_act (默认 0.1, 原版 0.5)")
+                        help="theta_thr correction threshold: reset to 0.9*max_act only when up_iqr < ratio*max_act (default 0.1, original 0.5)")
     parser.add_argument("--bound-method", type=str, default="shrink_iqr_adaptive",
                         choices=["shrink_iqr_adaptive"],
-                        help="上界公式: shrink_iqr_adaptive(统计量调制分位点的自适应IQR)")
-    parser.add_argument("--max_samples", type=int, default=1024, help="验证集评估样本数")
-    parser.add_argument("--sub_train", type=int, default=2048, help="边界统计子训练集样本数")
+                        help="upper-bound formula: shrink_iqr_adaptive (adaptive IQR with statistic-modulated quantiles)")
+    parser.add_argument("--max_samples", type=int, default=1024, help="validation-set eval samples")
+    parser.add_argument("--sub_train", type=int, default=2048, help="bound-stat sub-train samples")
     args = parser.parse_args()
 
     ds_name = args.dataset or DEFAULT_DATASET
     if ds_name not in DATASETS:
-        raise SystemExit("未知数据集: %s (可选: %s)" % (ds_name, sorted(DATASETS)))
+        raise SystemExit("unknown dataset: %s (options: %s)" % (ds_name, sorted(DATASETS)))
     ds = DATASETS[ds_name]
     data_path = args.data or ds["csv"]
     model_path = args.model or ds["model"]
@@ -683,27 +683,27 @@ def main():
                             n_int=args.n_int).get_val()))
 
     base_metrics = eval(model, data_loader_dict)
-    print("\n[1] 基线性能 (原始 ReLU, 无故障):")
+    print("\n[1] Baseline performance (original ReLU, no faults):")
     for k in METRIC_KEYS:
         print(f"    {k:10s}: {base_metrics[k]:.4f}")
 
 
-    print("\n[2] 无容错故障注入 (原始 ReLU + 故障):")
+    print("\n[2] Unprotected fault injection (original ReLU + faults):")
 
     orig_fault = {}
 
-    print("\n[边界优化] 开始边界搜索 (search_bound={}, bounds_type={}) ...".format(
+    print("\n[Bound optimization] start bound search (search_bound={}, bounds_type={}) ...".format(
         args.name_serach_bound, args.bounds_type))
     t_bound_start = time.time()
     model = replace_act(model, args.name_relu_bound, args.name_serach_bound,
                         data_loader_dict, args.bounds_type, args.bitflip)
     bound_time = time.time() - t_bound_start
-    print("[边界优化] 边界搜索耗时: {:.2f} s ({:.4f} min)".format(bound_time, bound_time / 60.0))
+    print("[Bound optimization] bound search time: {:.2f} s ({:.4f} min)".format(bound_time, bound_time / 60.0))
 
     print("\n[3] model accuracy in {} format = {} after replace ReLU activcation functions".format(
         args.bitflip, eval(model, data_loader_dict)))
 
-    print("\n[4] ranger 容错故障注入 (有界 ReLU + 故障):")
+    print("\n[4] ranger-protected fault injection (bounded ReLU + faults):")
     brelu_fault = {}
     for fault_rate in fault_rates:
         val_results_fault = eval_fault(model, data_loader_dict, fault_rate, args.iterations,
@@ -721,20 +721,20 @@ def main():
     lines = []   
     rows = []    
 
-    title = "=" * 100 + "\n性能对比汇总 (指标越小越好)\n" + "=" * 100
+    title = "=" * 100 + "\nPerformance summary (lower is better)\n" + "=" * 100
     print("\n" + title)
     lines.append(title)
 
     has_orig = bool(orig_fault)
 
     for metric in metrics_to_report:
-        head_title = "\n【" + metric + "】"
+        head_title = "\n[" + metric + "]"
         if has_orig:
             head_col = "{:>10s} | {:>13s} | {:>20s} | {:>13s} | {:>24s}".format(
-                "fault_rate", "基线(无故障)", "无容错", "ranger容错", "退化对比")
+                "fault_rate", "baseline (no fault)", "unprotected", "ranger", "degradation")
         else:
             head_col = "{:>10s} | {:>13s} | {:>13s} | {:>16s}".format(
-                "fault_rate", "基线(无故障)", "ranger容错", "退化")
+                "fault_rate", "baseline (no fault)", "ranger", "degradation")
         head_sep = "-" * 84
         print(head_title)
         print(head_col)
@@ -799,22 +799,22 @@ def main():
 
     with open(txt_path, 'a', encoding='utf-8') as f:
         f.write("\n" + "=" * 100 + "\n")
-        f.write("生成时间: {}\n".format(run_time))
-        f.write("配置: relu_bound={}, search_bound={}, bounds_type={}, bitflip={}, "
+        f.write("generated at: {}\n".format(run_time))
+        f.write("config: relu_bound={}, search_bound={}, bounds_type={}, bitflip={}, "
                 "iterations={}, fault_rates={}\n".format(
                     args.name_relu_bound, args.name_serach_bound, args.bounds_type,
                     args.bitflip, args.iterations, fault_rates))
-        f.write("评估样本数: {}, 边界统计(sub_train)样本数: {}, 模型参数量: {:,}\n".format(
+        f.write("eval samples: {}, bound-stat (sub_train) samples: {}, model params: {:,}\n".format(
             len(eval_idx), len(sub_train_idx), sum(p.numel() for p in model.parameters())))
-        f.write("边界优化耗时: {:.2f} s ({:.4f} min)\n".format(bound_time, bound_time / 60.0))
-        f.write("\n基线(原始 ReLU, 无故障) 指标:\n")
+        f.write("bound optimization time: {:.2f} s ({:.4f} min)\n".format(bound_time, bound_time / 60.0))
+        f.write("\nBaseline (original ReLU, no faults) metrics:\n")
         for k in METRIC_KEYS:
             f.write("    {:10s}: {:.4f}\n".format(k, base_metrics[k]))
         f.write("\n")
         f.write("\n".join(lines))
         f.write("\n")
 
-    print("\n结果已追加保存:")
+    print("\nResults appended:")
     print("  CSV: {}".format(csv_path))
     print("  TXT: {}".format(txt_path))
 

@@ -110,14 +110,14 @@ def prepare_multiclass_data(data_base, regions="west,mexico", seed=42,
         out = (names, (d["X_train"], d["y_train"]),
                (d["X_valid"], d["y_valid"]), (d["X_test"], d["y_test"]))
         if verbose:
-            print(f"[Data] 命中缓存 {cache_path}")
+            print(f"[Data] cache hit {cache_path}")
         return out
 
     REGIONS = get_regions(data_base)
     region_names = regions.split(",")
     normal, classes = load_multiclass(region_names, REGIONS)
     if verbose:
-        print(f"[Data] 正常={len(normal)} deviate={len(classes[1])} "
+        print(f"[Data] normal={len(normal)} deviate={len(classes[1])} "
               f"heading={len(classes[2])} sog_noise={len(classes[3])}")
 
     tracks, bounds, labels = [], [], []
@@ -142,15 +142,15 @@ def prepare_multiclass_data(data_base, regions="west,mexico", seed=42,
             tracks2.append(tr); bounds2.append(b); labels2.append(lb)
         tracks, bounds, labels = tracks2, bounds2, labels2
         if verbose:
-            print(f"[Data] 正常下采样到 {len(keep_set)} 条")
+            print(f"[Data] normal downsampled to {len(keep_set)} samples")
 
     y = np.asarray(labels)
     names = sorted(extract_features(tracks[0], *bounds[0]).keys())
     X = np.array([[extract_features(tracks[i], *bounds[i])[k] for k in names]
                   for i in range(len(tracks))], dtype=np.float32)
     if verbose:
-        print(f"[Data] 特征维度={X.shape[1]}, 总样本={X.shape[0]}")
-        print("[Data] 各类数量: " + " ".join(
+        print(f"[Data] feature dim={X.shape[1]}, total samples={X.shape[0]}")
+        print("[Data] per-class counts: " + " ".join(
             f"{CLASS_NAMES[c]}={int((y == c).sum())}" for c in range(4)))
 
     tr_idx, va_idx, te_idx = split_grouped(tracks, bounds, y, seed=seed)
@@ -167,5 +167,5 @@ def prepare_multiclass_data(data_base, regions="west,mexico", seed=42,
              X_test=X_test, y_test=y_test,
              feature_cols=np.array(names))
     if verbose:
-        print(f"[Data] 缓存已保存 {cache_path} (已归一化 log1p+min-max)")
+        print(f"[Data] cache saved {cache_path} (normalized log1p+min-max)")
     return names, (X_train, y_train), (X_valid, y_valid), (X_test, y_test)

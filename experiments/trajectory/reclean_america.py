@@ -45,7 +45,7 @@ def filter_bbox(df, bbox):
     before = len(df)
     df = df[(df["lat"] >= lat_min) & (df["lat"] <= lat_max) &
             (df["lon"] >= lon_min) & (df["lon"] <= lon_max)]
-    print("  [框定] %s -> %d -> %d (移除 %.1f%%)"
+    print("  [BBox] %s -> %d -> %d (removed %.1f%%)"
           % (bbox, before, len(df), 100 * (1 - len(df) / max(before, 1))))
     return df
 
@@ -58,7 +58,7 @@ def filter_invalid(df, min_speed, max_sog):
     df = df[df["sog"] >= min_speed]
     df = df.drop_duplicates(subset=["vid", "t"])
     df = df.sort_values(["vid", "t"]).reset_index(drop=True)
-    print("  [清洗] %d -> %d (移除 %.1f%%)" % (before, len(df), 100 * (1 - len(df) / max(before, 1))))
+    print("  [Clean] %d -> %d (removed %.1f%%)" % (before, len(df), 100 * (1 - len(df) / max(before, 1))))
     return df
 
 
@@ -122,23 +122,23 @@ def segment_and_window(df, rate, gap, min_len, stride, seg_start=0):
                     "segment_id": sid,
                 }))
 
-    print("  [切段] 总段数 %d, 保留(>=%d点) %d, 滑窗样本 %d"
+    print("  [Segment] total %d, kept (>=%d pts) %d, sliding-window samples %d"
           % (n_seg_total, min_len, n_seg_kept, len(windows)))
     return windows, n_seg_kept
 
 
 def main():
-    ap = argparse.ArgumentParser(description="AmericanAIS 数据清洗")
-    ap.add_argument("--rate", default="120s", help="重采样间隔")
-    ap.add_argument("--gap", default="1800s", help="同一船时间间隙超过该值切段")
-    ap.add_argument("--min-speed", type=float, default=0.5, help="低于该速度(节)判为停船")
+    ap = argparse.ArgumentParser(description="AmericanAIS data cleaning")
+    ap.add_argument("--rate", default="120s", help="resample interval")
+    ap.add_argument("--gap", default="1800s", help="split a vessel track into segments when the time gap exceeds this value")
+    ap.add_argument("--min-speed", type=float, default=0.5, help="treat vessels below this speed (knots) as stationary")
     ap.add_argument("--max-sog", type=float, default=MAX_SOG)
     ap.add_argument("--min-len", type=int, default=TOTAL_LEN)
     ap.add_argument("--stride", type=int, default=TOTAL_LEN)
     ap.add_argument("--output", default=os.path.join(OUTPUT_DIR, "windows_america.csv"))
-    ap.add_argument("--files", default=None, help="逗号分隔的文件名; 默认全部 .csv")
+    ap.add_argument("--files", default=None, help="comma-separated filenames; default all .csv")
     ap.add_argument("--bbox", default=None,
-                    help="地理框定: 港口名(houston)或 lat_min,lat_max,lon_min,lon_max; 默认不框定")
+                    help="geographic bounding: port name (houston) or lat_min,lat_max,lon_min,lon_max; default no bounding")
     args = ap.parse_args()
 
     bbox = None
@@ -148,7 +148,7 @@ def main():
         else:
             parts = [float(x) for x in args.bbox.split(",") if x.strip()]
             if len(parts) != 4:
-                raise SystemExit("--bbox 需为港口名或 4 个坐标 lat_min,lat_max,lon_min,lon_max")
+                raise SystemExit("--bbox must be a port name or 4 coordinates lat_min,lat_max,lon_min,lon_max")
             bbox = tuple(parts)
 
     files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith(".csv")])
@@ -160,11 +160,11 @@ def main():
     for fn in files:
         path = os.path.join(DATA_DIR, fn)
         if not os.path.exists(path):
-            print("[跳过] %s 不存在" % path)
+            print("[Skip] %s does not exist" % path)
             continue
         print("\n===== %s =====" % fn)
         df = load_day(path)
-        print("  原始 %d 行, %d 艘船" % (len(df), df["vid"].nunique()))
+        print("  raw %d rows, %d vessels" % (len(df), df["vid"].nunique()))
         if bbox is not None:
             df = filter_bbox(df, bbox)
         df = filter_invalid(df, args.min_speed, args.max_sog)
@@ -172,10 +172,10 @@ def main():
                                             args.min_len, args.stride, seg_offset)
         all_windows.extend(windows)
         seg_offset += n_seg
-        print("  累计样本: %d" % len(all_windows))
+        print("  total samples: %d" % len(all_windows))
 
     if not all_windows:
-        raise SystemExit("没有生成任何窗口: 请放宽 --gap / --min-speed")
+        raise SystemExit("no windows generated: relax --gap / --min-speed")
 
     out = pd.concat(all_windows, ignore_index=True)
     n_win = len(out) // TOTAL_LEN
@@ -190,22 +190,22 @@ def main():
     norm_json = os.path.splitext(os.path.abspath(args.output))[0] + "_norm.json"
     with open(norm_json, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
-    print("  归一化参数: %s" % json.dumps(stats))
-    print("  归一化参数已保存: %s" % norm_json)
+    print("  normalization params: %s" % json.dumps(stats))
+    print("  normalization params saved: %s" % norm_json)
 
     block = out["segment_id"].values.reshape(n_win, TOTAL_LEN)
     const = (block == block[:, :1]).all(axis=1).mean()
     seg_rows = out.groupby("segment_id").size()
-    print("\n[质量报告] 输出 %d 行 = %d 样本 x %d 步" % (len(out), n_win, TOTAL_LEN))
-    print("  SOG==0 占比: %.2f%%   SOG<0.5 占比: %.2f%%   平均 SOG: %.3f kn"
+    print("\n[Quality report] output %d rows = %d samples x %d steps" % (len(out), n_win, TOTAL_LEN))
+    print("  SOG==0 ratio: %.2f%%   SOG<0.5 ratio: %.2f%%   mean SOG: %.3f kn"
           % (100 * (out["SOG"] == 0).mean(), 100 * (out["SOG"] < 0.5).mean(), out["SOG"].mean()))
-    print("  42块内 segment_id 恒定占比: %.1f%%" % (100 * const))
-    print("  segment 行数为 42 倍数占比: %.1f%%" % (100 * (seg_rows % TOTAL_LEN == 0).mean()))
-    print("  段数 %d" % out["segment_id"].nunique())
+    print("  segment_id constant ratio within 42 blocks: %.1f%%" % (100 * const))
+    print("  ratio of segments with row count multiple of 42: %.1f%%" % (100 * (seg_rows % TOTAL_LEN == 0).mean()))
+    print("  segments %d" % out["segment_id"].nunique())
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     out.to_csv(args.output, index=False)
-    print("  已保存: %s" % os.path.abspath(args.output))
+    print("  saved: %s" % os.path.abspath(args.output))
 
 
 if __name__ == "__main__":

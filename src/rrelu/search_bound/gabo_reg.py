@@ -177,9 +177,9 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
         }
 
     if verbose:
-        print(f"[GABO] 收集完成: {total_samples} 样本, Baseline Loss: {baseline_loss_avg:.4f}")
+        print(f"[GABO] collection done: {total_samples} samples, Baseline Loss: {baseline_loss_avg:.4f}")
         for name, s in stats.items():
-            print(f"  层 {name}: Max={s['max_act']:.3f}, IQR_Upper={s['iqr_upper']:.3f}, "
+            print(f"  layer {name}: Max={s['max_act']:.3f}, IQR_Upper={s['iqr_upper']:.3f}, "
                   f"Protect_Lower={s['protect_lower']:.3f}, Init_Lambda={s['init_lambda']:.3f}")
 
     search_model = copy.deepcopy(model)
@@ -206,7 +206,7 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
     Y_tensor = torch.cat(Y_all, dim=0)[:max_samples].to(device)
 
     if verbose:
-        print(f"[GABO] 开始梯度上升 (Max Iter: {max_iter})...")
+        print(f"[GABO] starting gradient ascent (Max Iter: {max_iter})...")
 
     for it in range(max_iter):
         optimizer.zero_grad()
@@ -246,7 +246,7 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
         alpha[name] = torch.tensor(0.0)  
 
     if verbose:
-        print("[GABO] 优化完成。最终边界:")
+        print("[GABO] optimization done. final bounds:")
         for name, val in results.items():
             print(f"  {name}: {val.item():.4f}")
 
@@ -262,7 +262,7 @@ def GABO_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fi
 
     loader = data_loader_dict['sub_train']
 
-    print(f"\n[GABO] 启动回归版边界优化 (Protect Ratio: {protect_ratio}, "
+    print(f"\n[GABO] starting regression bound optimization (Protect Ratio: {protect_ratio}, "
           f"FDE Weight: {fde_weight}, Max Samples: {max_samples})")
 
     return _gradient_ascent_bound(

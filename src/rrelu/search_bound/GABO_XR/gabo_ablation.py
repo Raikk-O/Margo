@@ -218,7 +218,7 @@ def GABO_bounds(model, train_loader, device="cuda", bound_type='layer', bitflip=
                 correct_threshold=0.1, bound_method="shrink_iqr_adaptive"):
     
     if ablation not in ABLATION_MODES:
-        raise ValueError(f"未知 ablation 模式: {ablation!r}, 可选 {sorted(ABLATION_MODES)}")
+        raise ValueError(f"unknown ablation mode: {ablation!r}, options {sorted(ABLATION_MODES)}")
     abl = ABLATION_MODES[ablation]
 
     model.eval()

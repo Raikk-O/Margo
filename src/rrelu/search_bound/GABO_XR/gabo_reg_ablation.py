@@ -144,7 +144,7 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
                            feat_min=None, feat_max=None):
     
     if ablation not in ABLATION_MODES:
-        raise ValueError(f"未知 ablation 模式: {ablation!r}, 可选 {sorted(ABLATION_MODES)}")
+        raise ValueError(f"unknown ablation mode: {ablation!r}, options {sorted(ABLATION_MODES)}")
     abl = ABLATION_MODES[ablation]
 
     model.eval()
@@ -253,10 +253,10 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
     if verbose:
         print(f"[GABO-ablation] mode={ablation}  "
               f"(entropy={abl['use_entropy']}, skew={abl['use_skewness']}, "
-              f"adaptive={abl['use_adaptive']})  样本={total_samples}  "
+              f"adaptive={abl['use_adaptive']})  samples={total_samples}  "
               f"Baseline Loss={baseline_loss_avg:.4f}")
         for name, s in stats.items():
-            print(f"  层 {name}: Max={s['max_act']:.3f}, IQR_Upper={s['iqr_upper']:.3f}, "
+            print(f"  layer {name}: Max={s['max_act']:.3f}, IQR_Upper={s['iqr_upper']:.3f}, "
                   f"Protect_Lower={s['protect_lower']:.3f}, Init_Lambda={s['init_lambda']:.3f}")
 
     search_model = copy.deepcopy(model)
@@ -287,7 +287,7 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
         anchor_lon_tensor = torch.cat(anchor_lon_all, dim=0)[:max_samples].to(device)
 
     if verbose:
-        print(f"[GABO] 开始梯度上升 (Max Iter: {max_iter})...")
+        print(f"[GABO] starting gradient ascent (Max Iter: {max_iter})...")
 
     for it in range(max_iter):
         optimizer.zero_grad()
@@ -332,7 +332,7 @@ def _gradient_ascent_bound(model, data_loader, device, max_samples, protect_rati
         print(f"[diag] {name}: final_bound={final_val:.3f}  init={stats[name]['init_lambda']:.3f}")
 
     if verbose:
-        print("[GABO] 优化完成。最终边界:")
+        print("[GABO] optimization done. final bounds:")
         for name, val in results.items():
             print(f"  {name}: {val.item():.4f}")
 
@@ -351,7 +351,7 @@ def GABO_bounds(model, data_loader_dict, device, bound_type='layer', bitflip='fi
     use_ade = (feat_min is not None) and (feat_max is not None) and ('sub_train_full' in data_loader_dict)
     loader = data_loader_dict['sub_train_full'] if use_ade else data_loader_dict['sub_train']
 
-    print(f"\n[GABO-ablation] 启动回归版边界优化 (mode={ablation}, bound_method={bound_method}, "
+    print(f"\n[GABO-ablation] starting regression bound optimization (mode={ablation}, bound_method={bound_method}, "
           f"Protect Ratio: {protect_ratio}, FDE Weight: {fde_weight}, "
           f"Max Samples: {max_samples}, correct_threshold={correct_threshold})")
 

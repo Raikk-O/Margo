@@ -39,7 +39,7 @@ SURROUNDING_RADIUS_KM = 5.0
 
 def load_data(path: str):
     
-    print(f"正在读取数据: {path}")
+    print(f"Reading data: {path}")
     df = pd.read_csv(path)
     df["Timestamp"] = pd.to_datetime(df["# Timestamp"], dayfirst=True)
 
@@ -52,7 +52,7 @@ def load_data(path: str):
     df = df.sort_values(["MMSI", "Timestamp"]).reset_index(drop=True)
 
     raw_df = df.copy()
-    print(f"原始记录数: {len(raw_df)}")
+    print(f"Raw records: {len(raw_df)}")
     return raw_df, df
 
 
@@ -61,14 +61,14 @@ def filter_moored_anchored(df: pd.DataFrame) -> pd.DataFrame:
     before = len(df)
     mask = df[status_col].isin(MOORED_ANCHORED_STATUS)
     df = df[~mask].copy()
-    print(f"过滤停泊/锚泊后记录数: {len(df)} (移除 {before - len(df)})")
+    print(f"After filtering moored/anchored: {len(df)} (removed {before - len(df)})")
     return df
 
 
 def filter_high_speed(df: pd.DataFrame, max_sog: float = 30.0) -> pd.DataFrame:
     before = len(df)
     df = df[df["SOG"] <= max_sog].copy()
-    print(f"过滤 SOG > {max_sog} 节后记录数: {len(df)} (移除 {before - len(df)})")
+    print(f"After filtering SOG > {max_sog} kn: {len(df)} (removed {before - len(df)})")
     return df
 
 
@@ -88,7 +88,7 @@ def split_segments(df: pd.DataFrame) -> list:
         for i in range(len(split_positions) - 1):
             seg = group.iloc[split_positions[i]:split_positions[i + 1]].copy()
             segments.append(seg)
-    print(f"分段后航段数: {len(segments)}")
+    print(f"Segments after splitting: {len(segments)}")
     return segments
 
 
@@ -101,7 +101,7 @@ def filter_short_segments(segments: list) -> list:
         if duration_hours < MIN_DURATION_HOURS:
             continue
         valid.append(seg)
-    print(f"保留航段数: {len(valid)} (至少 {MIN_POINTS} 点且持续 >= {MIN_DURATION_HOURS} 小时)")
+    print(f"Kept segments: {len(valid)} (at least {MIN_POINTS} points and lasting >= {MIN_DURATION_HOURS} hours)")
     return valid
 
 
@@ -134,7 +134,7 @@ def resample_segments(segments: list) -> list:
         rs = resample_segment(seg)
         if len(rs) >= MIN_POINTS:
             resampled.append(rs)
-    print(f"重采样后保留航段数: {len(resampled)}")
+    print(f"Kept segments after resampling: {len(resampled)}")
     return resampled
 
 
@@ -157,7 +157,7 @@ def split_long_segments(segments: list, max_hours: float = MAX_SEGMENT_HOURS) ->
                 new_segments.append(sub_seg)
             start_time = sub_end
 
-    print(f"长航段分割后航段数: {len(new_segments)}")
+    print(f"Segments after splitting long segments: {len(new_segments)}")
     return new_segments
 
 
@@ -181,7 +181,7 @@ def add_trend_value(segments: list) -> list:
 
         seg['trend_value'] = seg['trend_value'].bfill().fillna(0)
 
-    print("已为所有航段添加 trend_value 列")
+    print("Added trend_value column to all segments")
     return segments
 
 
@@ -198,12 +198,12 @@ def sliding_window(segments: list) -> list:
             window["window_id"] = len(windows)
             windows.append(window)
             start += WINDOW_STEP
-    print(f"滑动窗口数量: {len(windows)}")
+    print(f"Sliding windows: {len(windows)}")
     return windows
 
 
 def min_max_normalize(windows: list):
-    print("正在计算全局归一化参数...")
+    print("Computing global normalization params...")
     all_data = pd.concat(windows, ignore_index=True)
     stats = {}
     for col in FEATURE_COLS:
@@ -211,7 +211,7 @@ def min_max_normalize(windows: list):
         cmax = float(all_data[col].max())
         stats[col] = {"min": cmin, "max": cmax}
 
-    print("正在应用归一化...")
+    print("Applying normalization...")
     for w in windows:
         for col in FEATURE_COLS:
             cmin, cmax = stats[col]["min"], stats[col]["max"]
@@ -223,7 +223,7 @@ def min_max_normalize(windows: list):
 
 
 def filter_coastline(segments: list) -> list:
-    print("⚠️ 警告：近岸过滤（<1 nmi）未实现。缺少海岸线矢量数据，该步骤已跳过。请在论文中说明。")
+    print("⚠️ Warning: near-shore filtering (<1 nmi) is not implemented. Missing coastline vector data, so this step is skipped. Please note this in the paper.")
     return segments
 
 
@@ -301,27 +301,27 @@ def get_surrounding_info(segment_group, global_df, radius_km):
 
 def add_surrounding_info(windows, raw_df, radius_km):
     
-    print("正在计算周围船只信息（已向量化优化）...")
+    print("Computing surrounding-vessel info (vectorized)...")
     total = len(windows)
     for i, w in enumerate(windows):
         info = get_surrounding_info(w, raw_df, radius_km)
         w['surrounding_info'] = info
         if (i + 1) % 1000 == 0 or (i + 1) == total:
-            print(f"  进度: {i + 1}/{total}")
-    print("周围信息添加完成")
+            print(f"  progress: {i + 1}/{total}")
+    print("Surrounding-vessel info done")
     return windows
 
 
 def save_results(segments, windows, stats):
     if segments:
         pd.concat(segments, ignore_index=True).to_csv(SEGMENTS_FILE, index=False)
-        print(f"已保存航段文件: {SEGMENTS_FILE}")
+        print(f"Saved segments file: {SEGMENTS_FILE}")
     if windows:
         pd.concat(windows, ignore_index=True).to_csv(WINDOWS_FILE, index=False)
-        print(f"已保存窗口文件: {WINDOWS_FILE}")
+        print(f"Saved windows file: {WINDOWS_FILE}")
     with open(NORM_FILE, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
-    print(f"已保存归一化参数: {NORM_FILE}")
+    print(f"Saved normalization params: {NORM_FILE}")
 
 
 def main():

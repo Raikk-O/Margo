@@ -176,7 +176,7 @@ def apply_bound_protection(model, data_loader_dict, device, bitflip="fixed",
     else:
         bounds, tresh, _ = Ranger_bounds(model, data_loader_dict, device=device,
                                          bound_type='layer', bitflip=bitflip)
-    print(f"[{search_bound}] 每层激活上界(bounds): "
+    print(f"[{search_bound}] per-layer activation upper bounds: "
           f"{ {k: round(float(v), 4) for k, v in bounds.items()} }")
     protected = replace_act_all(copy.deepcopy(model), RELU_BOUND_FN[relu_bound], bounds, tresh)
     return protected
@@ -305,55 +305,55 @@ def eval_fault(model, data_loader_dict, fault_rate, iterations=20,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-base", type=str,
-                        default=r"D:\实验2\DNN_SPECTRE_SDN_v1\AIS\trajectory_anomaly_detection\data")
+                        default=r"D:\experiment2\DNN_SPECTRE_SDN_v1\AIS\trajectory_anomaly_detection\data")
     parser.add_argument("--regions", type=str, default="west,mexico")
     parser.add_argument("--model_path", type=str, default="traj_anomaly_classifier.pt")
     parser.add_argument("--iterations", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=0, help="随机种子(数据划分/故障注入)")
+    parser.add_argument("--seed", type=int, default=0, help="random seed (data split / fault injection)")
     parser.add_argument("--n_word", type=int, default=32)
     parser.add_argument("--n_frac", type=int, default=16)
     parser.add_argument("--n_int", type=int, default=15)
     parser.add_argument("--bitflip", type=str, default="fixed", choices=["fixed", "float"])
     parser.add_argument("--fault_rates", type=str, default="1e-5,3e-5,5e-5,1e-4,3e-4")
     parser.add_argument("--relu-bound", type=str, default="tresh", choices=["tresh", "zero"],
-                        help="有界 ReLU 类型")
+                        help="bounded ReLU type")
     parser.add_argument("--search-bound", type=str, default="ranger",
                         choices=["ranger", "gabo", "gabo_sac"],
-                        help="边界搜索策略: ranger / gabo / gabo_sac(GABO+SAC 联合优化)")
+                        help="bound search strategy: ranger / gabo / gabo_sac (GABO+SAC joint optimization)")
     parser.add_argument("--gabo-ablation", type=str, default="full",
                         choices=["full", "entropy_only", "skew_only", "adaptive_only"],
-                        help="GABO 初始化统计量消融(only 版): full / entropy_only / skew_only / adaptive_only")
+                        help="GABO init-stats ablation (only version): full / entropy_only / skew_only / adaptive_only")
     parser.add_argument("--gabo-correct-threshold", type=float, default=0.1,
-                        help="θthr 修正阈值: up_iqr < ratio*max_act 时才重置为 0.9*max_act (默认 0.1, 原版 0.5)")
+                        help="theta_thr correction threshold: reset to 0.9*max_act only when up_iqr < ratio*max_act (default 0.1, original 0.5)")
     parser.add_argument("--bound-method", type=str, default="shrink_iqr_adaptive",
                         choices=["shrink_iqr_adaptive"],
-                        help="上界公式: shrink_iqr_adaptive(统计量调制分位点的自适应IQR)")
+                        help="upper-bound formula: shrink_iqr_adaptive (adaptive IQR with statistic-modulated quantiles)")
     parser.add_argument("--sac-fault-rate", type=float, default=1e-4,
-                        help="GABO-SAC 内部搜索用的位翻转率(与最终评估故障注入对齐)")
+                        help="bit-flip rate used in GABO-SAC inner search (aligned with final eval fault injection)")
 
 
     parser.add_argument("--gabo-max-samples", type=int, default=2048,
-                        help="Phase1 GABO 收集激活统计的样本数")
+                        help="samples for Phase1 GABO activation statistics")
     parser.add_argument("--gabo-protect-ratio", type=float, default=0.0,
-                        help="Phase1 GABO 下界保护: λ >= max_act * ratio")
+                        help="Phase1 GABO lower-bound protection: λ >= max_act * ratio")
     parser.add_argument("--sac-episodes", type=int, default=50,
-                        help="Phase2 SAC episode 数(CPU 慢可调小)")
-    parser.add_argument("--sac-steps", type=int, default=8, help="每个 episode 的交互步数")
-    parser.add_argument("--sac-lr", type=float, default=1e-4, help="SAC 学习率")
-    parser.add_argument("--sac-batch-size", type=int, default=64, help="SAC 采样 batch")
-    parser.add_argument("--sac-updates", type=int, default=2, help="每步 SAC 更新次数")
-    parser.add_argument("--sac-tolerance", type=float, default=0.03, help="clean 精度允许退化比例")
-    parser.add_argument("--sac-penalty", type=float, default=10.0, help="clean 退化惩罚权重")
+                        help="Phase2 SAC episodes (lower if CPU is slow)")
+    parser.add_argument("--sac-steps", type=int, default=8, help="interaction steps per episode")
+    parser.add_argument("--sac-lr", type=float, default=1e-4, help="SAC learning rate")
+    parser.add_argument("--sac-batch-size", type=int, default=64, help="SAC sample batch")
+    parser.add_argument("--sac-updates", type=int, default=2, help="SAC updates per step")
+    parser.add_argument("--sac-tolerance", type=float, default=0.03, help="allowed clean accuracy degradation ratio")
+    parser.add_argument("--sac-penalty", type=float, default=10.0, help="clean degradation penalty weight")
     parser.add_argument("--sac-protect-bonus", type=float, default=0.0,
-                        help="有效保护层数奖励权重(默认 0 关闭, 避免污染 fault 主信号)")
+                        help="reward weight for effectively protected layers (default 0 = off, avoid polluting the fault signal)")
     parser.add_argument("--sac-action-scale", type=float, default=0.5,
-                        help="搜索幅度: λ = max_act * exp(action * scale)")
-    parser.add_argument("--sac-trials", type=int, default=5, help="每个 action 的故障注入重复次数")
-    parser.add_argument("--sac-eval-samples", type=int, default=2048, help="SAC 评估样本数")
+                        help="search magnitude: λ = max_act * exp(action * scale)")
+    parser.add_argument("--sac-trials", type=int, default=5, help="fault-injection repeats per action")
+    parser.add_argument("--sac-eval-samples", type=int, default=2048, help="SAC eval samples")
     parser.add_argument("--sac-allow-expand", action="store_true",
-                        help="允许 λ 超过 Ranger 上界(默认裁剪到 Ranger 以内)")
-    parser.add_argument("--sac-verbose", action="store_true", help="打印 GABO-SAC 详细过程")
-    parser.add_argument("--refresh", action="store_true", help="忽略缓存,重新准备数据")
+                        help="allow λ beyond the Ranger upper bound (default: clipped to Ranger)")
+    parser.add_argument("--sac-verbose", action="store_true", help="print detailed GABO-SAC process")
+    parser.add_argument("--refresh", action="store_true", help="ignore cache and re-prepare data")
     args = parser.parse_args()
 
     device = Config.DEVICE
@@ -379,11 +379,11 @@ def main():
         verbose=args.sac_verbose,
     )
 
-    print("== 1) 准备数据 ==")
+    print("== 1) Prepare data ==")
     feature_cols, (X_train, y_train), (X_valid, y_valid), (X_test, y_test) = \
         prepare_multiclass_data(args.data_base, args.regions, seed=args.seed, refresh=args.refresh)
 
-    print("\n== 2) 加载多分类模型 ==")
+    print("\n== 2) Load multiclass model ==")
     model_path = os.path.join(_SCRIPT_DIR, args.model_path) if not os.path.isabs(args.model_path) else args.model_path
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
 
@@ -392,7 +392,7 @@ def main():
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     print(f"[Model] loaded {args.model_path}, params={sum(p.numel() for p in model.parameters()):,}")
-    print(f"[Model] 隐藏层: {' -> '.join(map(str, ckpt['hidden_dims']))} -> {len(ckpt['class_names'])}")
+    print(f"[Model] hidden layers: {' -> '.join(map(str, ckpt['hidden_dims']))} -> {len(ckpt['class_names'])}")
 
     data_loader_dict = {
         "train": DataLoader(TrajDataset(X_train, y_train), batch_size=BATCH_SIZE, shuffle=True),
@@ -409,14 +409,14 @@ def main():
                         Fxp(param.clone().cpu().numpy(), True,
                             n_word=args.n_word, n_frac=args.n_frac, n_int=args.n_int).get_val()))
     base = eval_metrics(model, data_loader_dict["val"], device)
-    print("\n[1] 基线 (定点, 无故障):")
+    print("\n[1] Baseline (fixed-point, no faults):")
     for k in METRIC_KEYS:
         print(f"    {k:12s}: {base[k]:.4f}")
 
-    print("\n[2] 故障注入测试 (无边界保护):")
+    print("\n[2] Fault injection test (no bound protection):")
     results_no = []
 
-    print(f"\n[3] 边界保护 ({args.search_bound}):")
+    print(f"\n[3] Bound protection ({args.search_bound}):")
     model_protected = apply_bound_protection(model, data_loader_dict, device,
                                              bitflip=args.bitflip, relu_bound=args.relu_bound,
                                              search_bound=args.search_bound,
@@ -426,21 +426,21 @@ def main():
                                              gabo_correct_threshold=args.gabo_correct_threshold,
                                              gabo_bound_method=args.bound_method)
     base_protect = eval_metrics(model_protected, data_loader_dict["val"], device)
-    print(f"  有保护基线(无故障): acc={base_protect['accuracy']:.4f} "
+    print(f"  protected baseline (no faults): acc={base_protect['accuracy']:.4f} "
           f"macro_f1={base_protect['macro_f1']:.4f}")
 
-    print(f"\n[4] 故障注入测试 ({args.search_bound} 边界保护):")
+    print(f"\n[4] Fault injection test ({args.search_bound} bound protection):")
     results_protect = []
     for fr in fault_rates:
         res = eval_fault(model_protected, data_loader_dict, fr, args.iterations,
                          args.bitflip, args.n_word, args.n_frac, args.n_int)
         results_protect.append(res)
         print(f"  {fr:.0e}: acc={res['accuracy']:.4f} macro_f1={res['macro_f1']:.4f} "
-              f"| 平均改动权重数={res['n_changed_weights']:.1f} "
+              f"| mean changed weights={res['n_changed_weights']:.1f} "
               f"(±{res['n_changed_weights_std']:.1f})")
 
     print("\n" + "=" * 68)
-    print(f"{'Rate':>8s} | {'无保护F1':>9s} | {'有保护F1':>9s} | {'提升':>8s}")
+    print(f"{'Rate':>8s} | {'UnprotF1':>9s} | {'ProtF1':>9s} | {'Gain':>8s}")
     print("-" * 68)
     for r0, r1 in zip(results_no, results_protect):
         gain = r1['macro_f1'] - r0['macro_f1']
