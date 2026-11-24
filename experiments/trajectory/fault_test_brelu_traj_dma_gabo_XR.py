@@ -566,7 +566,7 @@ def main():
                         choices=["ranger", "gabo", "gabo_sac", "proact"])
     parser.add_argument("--bounds_type", type=str, default="layer", choices=["layer", "neuron"])
     parser.add_argument("--bitflip", type=str, default="fixed", choices=["fixed", "float", "int"])
-    parser.add_argument("--fault_rates", type=str, default="1e-7,3e-7,5e-7,7e-7,1e-6")
+    parser.add_argument("--fault_rates", type=str, default="3e-7,5e-7,7e-7,1e-6")
 
     parser.add_argument("--sac_episodes", type=int, default=30, help="SAC training episodes")
     parser.add_argument("--sac_steps", type=int, default=20, help="SAC steps per episode")
